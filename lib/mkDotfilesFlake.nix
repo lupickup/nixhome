@@ -51,11 +51,21 @@ inputs: args @ {
   , aliases ? { }
   , overlays ? [ ]
   , extraSpecialArgs ? { }
+  # Extra module directories to scan and auto-load. Downstream private overlays
+  # use this to layer their own modules on top of the OSS base. Paths are
+  # walked with mapModulesRec' just like nixhome's own modules/home/ and
+  # modules/darwin/ directories.
+  , extraHomeModuleDirs ? [ ]
+  , extraDarwinModuleDirs ? [ ]
+  # Already-imported module values (functions or attrsets) to also include.
+  # Use this for one-off inline modules.
+  , extraHomeModules ? [ ]
+  , extraDarwinModules ? [ ]
   , ...
 }:
 
 let
-  inherit (lib) hasSuffix mkDefault genAttrs mapAttrs filterAttrs;
+  inherit (lib) hasSuffix mkDefault genAttrs mapAttrs filterAttrs concatMap;
   inherit (inputs) nixpkgs;
 
   # Normalise a host's declared config object. Host files can be either an
@@ -102,6 +112,12 @@ let
     (if builtins.pathExists homeModulesPath
      then modulesLib.mapModulesRec' homeModulesPath import
      else [ ])
+    (concatMap
+      (d: if builtins.pathExists d
+          then modulesLib.mapModulesRec' d import
+          else [ ])
+      extraHomeModuleDirs)
+    extraHomeModules
   ];
 
   loadDarwinModules = builtins.concatLists [
@@ -111,6 +127,12 @@ let
     (if builtins.pathExists darwinModulesPath
      then modulesLib.mapModulesRec' darwinModulesPath import
      else [ ])
+    (concatMap
+      (d: if builtins.pathExists d
+          then modulesLib.mapModulesRec' d import
+          else [ ])
+      extraDarwinModuleDirs)
+    extraDarwinModules
   ];
 
   # Build a standalone home-manager configuration (Linux, including WSL).

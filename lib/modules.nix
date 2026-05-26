@@ -70,15 +70,30 @@ in rec {
   # Convenience for host directories: each subdir with a default.nix becomes
   # a named entry. Returns an attrset (so hosts are addressable by name).
   #
+  # Accepts either a single dir or a list of dirs (merged with later entries
+  # winning on name collision).
+  #
   # Example: mapHosts ./hosts =>
   #   { example-mac = <imported>; example-linux = <imported>; }
-  mapHosts = dir:
-    attrs.mapFilterAttrs'
-      (n: v:
-        let path = "${toString dir}/${n}"; in
-        if v == "directory" && pathExists "${path}/default.nix"
-        then nameValuePair n (import path)
-        else nameValuePair "" null)
-      (n: v: v != null && !(hasPrefix "_" n))
-      (readDir dir);
+  #
+  # Example: mapHosts [ ./hosts ./private/personal/hosts ./private/work/hosts ]
+  #   merges all three.
+  mapHosts = dirOrDirs:
+    let
+      walk = dir:
+        attrs.mapFilterAttrs'
+          (n: v:
+            let path = "${toString dir}/${n}"; in
+            if v == "directory" && pathExists "${path}/default.nix"
+            then nameValuePair n (import path)
+            else nameValuePair "" null)
+          (n: v: v != null && !(hasPrefix "_" n))
+          (readDir dir);
+      dirs =
+        if builtins.isList dirOrDirs
+        then dirOrDirs
+        else [ dirOrDirs ];
+      attrsList = map walk (builtins.filter pathExists dirs);
+    in
+      lib.foldl' (acc: a: acc // a) { } attrsList;
 }
