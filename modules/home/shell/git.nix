@@ -124,50 +124,56 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    programs.git = {
-      enable = true;
-      lfs.enable = true;
+  config = lib.mkMerge [
+    # Per-identity gitconfig files written into $HOME root. Deployed
+    # UNCONDITIONALLY (not gated on enable) so hosts that take a writable-
+    # symlink approach to ~/.config/git/config (e.g. for credential-manager
+    # write-back) can still benefit from identity profile contributions.
+    {
+      home.file = lib.mkMerge (
+        lib.mapAttrsToList (idName: contents: {
+          "${idName}.gitconfig".text = contents;
+        }) cfg.identityFiles
+      );
+    }
 
-      settings = lib.mkMerge [
-        {
-          user = lib.mkIf (cfg.userName != "" || cfg.userEmail != "") (
-            lib.optionalAttrs (cfg.userName != "") { name = cfg.userName; }
-            // lib.optionalAttrs (cfg.userEmail != "") { email = cfg.userEmail; }
-          );
-          init.defaultBranch = cfg.defaultBranch;
-          core.autocrlf = "input";
-          core.editor = cfg.editor;
-        }
-        (lib.optionalAttrs (cfg.sshCommand != null) {
-          core.sshCommand = cfg.sshCommand;
-        })
-        (lib.optionalAttrs (cfg.credentialHelper != null) {
-          credential.helper = cfg.credentialHelper;
-        })
-        (lib.optionalAttrs (cfg.signing.key != null) {
-          gpg.format = "ssh";
-        })
-        (lib.optionalAttrs (cfg.signing.program != null) {
-          "gpg \"ssh\"".program = cfg.signing.program;
-        })
-        cfg.extraSettings
-      ];
+    (lib.mkIf cfg.enable {
+      programs.git = {
+        enable = true;
+        lfs.enable = true;
 
-      signing = lib.mkIf (cfg.signing.key != null) {
-        key = cfg.signing.key;
-        signByDefault = cfg.signing.signByDefault;
+        settings = lib.mkMerge [
+          {
+            user = lib.mkIf (cfg.userName != "" || cfg.userEmail != "") (
+              lib.optionalAttrs (cfg.userName != "") { name = cfg.userName; }
+              // lib.optionalAttrs (cfg.userEmail != "") { email = cfg.userEmail; }
+            );
+            init.defaultBranch = cfg.defaultBranch;
+            core.autocrlf = "input";
+            core.editor = cfg.editor;
+          }
+          (lib.optionalAttrs (cfg.sshCommand != null) {
+            core.sshCommand = cfg.sshCommand;
+          })
+          (lib.optionalAttrs (cfg.credentialHelper != null) {
+            credential.helper = cfg.credentialHelper;
+          })
+          (lib.optionalAttrs (cfg.signing.key != null) {
+            gpg.format = "ssh";
+          })
+          (lib.optionalAttrs (cfg.signing.program != null) {
+            "gpg \"ssh\"".program = cfg.signing.program;
+          })
+          cfg.extraSettings
+        ];
+
+        signing = lib.mkIf (cfg.signing.key != null) {
+          key = cfg.signing.key;
+          signByDefault = cfg.signing.signByDefault;
+        };
+
+        includes = cfg.includes;
       };
-
-      includes = cfg.includes;
-    };
-
-    # Per-identity gitconfig files written into $HOME root so [include path=]
-    # directives in the top-level config can reference ~/<name>.gitconfig.
-    home.file = lib.mkMerge (
-      lib.mapAttrsToList (idName: contents: {
-        "${idName}.gitconfig".text = contents;
-      }) cfg.identityFiles
-    );
-  };
+    })
+  ];
 }
