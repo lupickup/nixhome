@@ -15,16 +15,21 @@
     };
   };
 
-  # Phase 0 skeleton. Phase 1 will populate:
-  #   - lib.mkDotfilesFlake (custom flake builder with auto-module-discovery,
-  #     Darwin user wiring, hostname aliases, dotfiles.context.* options)
-  #   - modules/ tree (base, platform, identity, dev, shell, …)
-  #   - hosts/example-{mac,linux}/default.nix reference hosts
-  outputs = { self, nixpkgs, home-manager, darwin, ... }: {
-    lib = { };
-
-    # Skeleton outputs — replaced in Phase 1.
-    homeConfigurations = { };
-    darwinConfigurations = { };
-  };
+  # Phase 1: lib + option schemas + example hosts. Phase 2 will populate
+  # modules/home/* and modules/darwin/* with the generic app modules.
+  outputs = inputs @ { self, nixpkgs, home-manager, darwin, ... }:
+    let
+      lib = import ./lib { inherit (nixpkgs) lib; };
+    in
+      (lib.mkDotfilesFlake inputs {
+        hosts = lib.mapHosts ./hosts;
+        # No aliases yet — the public OSS repo has none.
+      }) // {
+        # Expose our extended lib so downstream private overlay flakes can:
+        #   inputs.nixhome.url = "github:lupickup/nixhome";
+        #   lib = inputs.nixhome.lib;
+        #   lib.mkDotfilesFlake ...
+        inherit lib;
+      };
 }
+
