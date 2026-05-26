@@ -15,6 +15,16 @@ in
   options.modules.home.dev.codex = {
     enable = lib.mkEnableOption "Codex CLI configuration";
 
+    installPackage = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Install pkgs.codex into home.packages. Disabled by default because
+        Codex is also commonly installed via npm/brew/cargo; opt in if you
+        want the nixpkgs build.
+      '';
+    };
+
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -49,6 +59,10 @@ in
   };
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
+    (lib.mkIf cfg.installPackage {
+      home.packages = [ pkgs.codex ];
+    })
+
     (lib.mkIf (cfg.configFile != null) {
       xdg.configFile."codex/config.toml".source =
         config.lib.file.mkOutOfStoreSymlink (toString cfg.configFile);

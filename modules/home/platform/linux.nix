@@ -38,7 +38,9 @@ in
     ] ++ lib.optionals cfg.enableDesktopFonts [
       nerd-fonts.iosevka
       nerd-fonts.iosevka-term
-    ];
+    ] ++ lib.optional
+      (ctx.clipboardBackend == "wl-clipboard" && ctx.platform != "wsl")
+      wl-clipboard;
 
     home.sessionPath = lib.mkIf cfg.enableLinuxbrewPath [
       "/home/linuxbrew/.linuxbrew/bin"
