@@ -6,7 +6,7 @@
 #   - Auto-wires `home-manager.users.${user}` on Darwin so Darwin host files
 #     don't have to re-declare users manually (the reference repo's mkFlake
 #     omits this, which is a foot-gun for our use case).
-#   - Hostname aliases: e.g. `lupickup@work-dev-enc-01` → `work-dev-enc-01`.
+#   - Hostname aliases: e.g. `alice@laptop` → `laptop`.
 #     Home Manager defaults `--flake .#$USER@$HOSTNAME` so aliases let users
 #     point cwd-resolved targets at canonical host configs.
 #   - Recursively auto-loads modules from `modules/home/` and `modules/darwin/`

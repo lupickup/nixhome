@@ -48,7 +48,7 @@ in
       type = lib.types.attrsOf lib.types.attrs;
       default = { };
       description = ''
-        Extra programs.ssh.matchBlocks entries (e.g. github.com-msft,
+        Extra programs.ssh.matchBlocks entries (e.g. github.com-work,
         github.com-personal). Merged with the default wildcard block.
       '';
     };

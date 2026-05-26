@@ -6,7 +6,7 @@
 #   1. modules.home.shell.git options (userName, userEmail, signingKey,
 #      signingProgram), set by the host or an identity profile module.
 #   2. modules.home.shell.git.identityIncludes — list of per-org includes
-#      (e.g. github.com-msft url rewrites in microsoft.gitconfig).
+#      (e.g. github.com-work url rewrites in work.gitconfig).
 #
 # Inline-built per-identity gitconfig files (per user decision): the host or
 # identity module sets `identityFiles = { personal = "..."; }` and this
