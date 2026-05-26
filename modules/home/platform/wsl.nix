@@ -16,8 +16,8 @@ in
   };
 
   config = lib.mkIf (cfg.enable && ctx.platform == "wsl") {
-    home.packages = with pkgs; [
-      wslu
-    ];
+    # `wslu` was removed from nixpkgs in mid-2025 (project archived). Install
+    # the Microsoft-provided wslu via apt on the Windows side if needed.
+    home.packages = [ ];
   };
 }
