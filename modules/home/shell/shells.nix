@@ -3,7 +3,7 @@
 # directory.
 #
 # Each file is independent (different shells want different things). The
-# OSS module deploys NONE by default — forkers point each to their own file:
+# OSS module deploys NONE by default — forkers point at their source dir:
 #
 #   modules.home.shell.shells = {
 #     enable = true;
@@ -12,14 +12,18 @@
 #     # bashrc = "''${dotfilesDir}/bashrc";  # explicit path
 #     # zshenv = null;                       # disable this one
 #   };
+#
+# IMPORTANT: source files in the repo are named WITHOUT a leading dot
+# (e.g. `zshrc`, `bashrc`), but deployed to the home directory WITH the dot
+# (`~/.zshrc`, `~/.bashrc`). The `files` map below encodes both names per
+# entry: { source-basename = "target-basename"; }.
 
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.modules.home.shell.shells;
 
-  # For each shell file, prefer the explicit override, fall back to
-  # ${sourceDir}/<name>. A null value means "don't symlink this one".
+  # source basename in the repo  ->  home-relative target basename.
   files = {
     profile  = ".profile";
     shellenv = ".shellenv";
@@ -29,16 +33,16 @@ let
     bashrc   = ".bashrc";
   };
 
-  resolveSource = optName: defaultBasename:
+  resolveSource = optName: sourceBasename:
     let
       override = cfg.${optName};
     in
       # Explicit per-file override takes precedence when provided.
       if override != null && (builtins.isString override || builtins.isPath override)
       then toString override
-      # Otherwise fall back to <sourceDir>/<basename> when sourceDir is set.
+      # Otherwise fall back to <sourceDir>/<source-basename> when sourceDir is set.
       else if cfg.sourceDir != null
-      then "${toString cfg.sourceDir}/${defaultBasename}"
+      then "${toString cfg.sourceDir}/${sourceBasename}"
       # Nothing to deploy for this entry.
       else null;
 in
@@ -51,26 +55,27 @@ in
       default = null;
       description = ''
         Default directory to look for shell rc files. Each per-file option
-        defaults to <sourceDir>/<basename>. Set to null to require explicit
-        per-file overrides.
+        defaults to <sourceDir>/<source-basename> (the dotless name; the
+        deployed home target gets the leading dot). Set to null to require
+        explicit per-file overrides.
       '';
     };
-  } // lib.mapAttrs (optName: basename: lib.mkOption {
+  } // lib.mapAttrs (optName: targetBasename: lib.mkOption {
     type = lib.types.nullOr lib.types.path;
     default = null;
     description = ''
-      Override path for ${basename}. If null and sourceDir is set, falls back
-      to <sourceDir>/${basename}. If null and sourceDir is null, ${basename}
-      is not deployed.
+      Override path for ${targetBasename}. If null and sourceDir is set,
+      falls back to <sourceDir>/${optName} (the source file in the repo is
+      ${optName}; deployed to ~/${targetBasename}).
     '';
-  }) (builtins.removeAttrs files [ ]);
+  }) files;
 
   config = lib.mkIf cfg.enable {
     home.file = lib.mkMerge (
-      lib.mapAttrsToList (optName: basename:
-        let src = resolveSource optName (toString basename);
+      lib.mapAttrsToList (sourceBasename: targetBasename:
+        let src = resolveSource sourceBasename sourceBasename;
         in lib.mkIf (src != null) {
-          ${basename}.source = config.lib.file.mkOutOfStoreSymlink src;
+          ${targetBasename}.source = config.lib.file.mkOutOfStoreSymlink src;
         }
       ) files
     );
