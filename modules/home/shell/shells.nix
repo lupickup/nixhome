@@ -33,11 +33,13 @@ let
     let
       override = cfg.${optName};
     in
-      if override == null then null
-      else if builtins.isString override || builtins.isPath override
+      # Explicit per-file override takes precedence when provided.
+      if override != null && (builtins.isString override || builtins.isPath override)
       then toString override
+      # Otherwise fall back to <sourceDir>/<basename> when sourceDir is set.
       else if cfg.sourceDir != null
       then "${toString cfg.sourceDir}/${defaultBasename}"
+      # Nothing to deploy for this entry.
       else null;
 in
 {
