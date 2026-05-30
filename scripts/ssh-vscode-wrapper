@@ -1,0 +1,86 @@
+#!/bin/bash
+# ssh-vscode-wrapper: Resolves a live forwarded or VM-local SSH agent socket
+# before delegating to ssh.
+#
+# Solves: stale SSH_AUTH_SOCK in zellij/tmux sessions after reconnects, while
+# allowing a limited local devbox key to act as fallback.
+# Install: git config core.sshCommand ~/.local/bin/ssh-vscode-wrapper
+
+set -euo pipefail
+
+RESOLVER="$(dirname "$0")/resolve-vscode-ssh-sock"
+SSH_BIN="$(command -v ssh)"
+
+required_key_file=""
+
+detect_required_key_file() {
+  local prev="" arg host=""
+  for arg in "$@"; do
+    if [ "$prev" = "-i" ] || [ "$prev" = "IdentityFile" ]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+
+    case "$arg" in
+      github.com-msft|git@github.com-msft:*|ssh://git@github.com-msft/*)
+        printf '%s\n' "$HOME/.ssh/msft.pub"
+        return 0
+        ;;
+      github.com-linkedin|git@github.com-linkedin:*|ssh://git@github.com-linkedin/*)
+        printf '%s\n' "$HOME/.ssh/linkedin.pub"
+        return 0
+        ;;
+      github.com-personal|git@github.com-personal:*|ssh://git@github.com-personal/*)
+        printf '%s\n' "$HOME/.ssh/personal.pub"
+        return 0
+        ;;
+    esac
+
+    if [[ "$arg" != -* && "$arg" == *@* ]]; then
+      host="${arg#*@}"
+      host="${host%%:*}"
+      case "$host" in
+        github.com-msft)
+          printf '%s\n' "$HOME/.ssh/msft.pub"
+          return 0
+          ;;
+        github.com-linkedin)
+          printf '%s\n' "$HOME/.ssh/linkedin.pub"
+          return 0
+          ;;
+        github.com-personal)
+          printf '%s\n' "$HOME/.ssh/personal.pub"
+          return 0
+          ;;
+      esac
+    fi
+
+    prev="$arg"
+  done
+}
+
+required_key_file="$(detect_required_key_file "$@" || true)"
+
+resolver_args=(--path --prefer "${SSH_AUTH_SOCK-}")
+if [ -n "$required_key_file" ] && [ -f "$required_key_file" ]; then
+  resolver_args+=(--key-file "$required_key_file")
+fi
+
+live_sock="$($RESOLVER "${resolver_args[@]}" 2>/dev/null || true)"
+if [ -z "$live_sock" ]; then
+  if [ -n "$required_key_file" ]; then
+    echo "ERROR: No forwarded or local SSH agent has $(basename "$required_key_file")." >&2
+    echo "Hint: reconnect with agent forwarding, or load the fallback key with: devbox-ssh-add-msft" >&2
+  else
+    echo "ERROR: No live SSH agent socket with identities found" >&2
+  fi
+  exit 1
+fi
+
+export SSH_AUTH_SOCK="$live_sock"
+
+if [ -n "$required_key_file" ] && [ -f "$required_key_file" ]; then
+  exec "$SSH_BIN" -o IdentityAgent="$live_sock" -i "$required_key_file" "$@"
+fi
+
+exec "$SSH_BIN" -o IdentityAgent="$live_sock" "$@"

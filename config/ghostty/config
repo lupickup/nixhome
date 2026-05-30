@@ -1,0 +1,159 @@
+# Config syntax crash course
+# ==========================
+# # The config file consists of simple key-value pairs,
+# # separated by equals signs.
+# font-family = Iosevka
+# window-padding-x = 2
+#
+# # Spacing around the equals sign does not matter.
+# # All of these are identical:
+# key=value
+# key= value
+# key =value
+# key = value
+#
+# # Any line beginning with a # is a comment. It's not possible to put
+# # a comment after a config option, since it would be interpreted as a
+# # part of the value. For example, this will have a value of "#123abc":
+# background = #123abc
+#
+# # Empty values are used to reset config keys to default.
+# key =
+#
+# # Some config options have unique syntaxes for their value,
+# # which is explained in the docs for that config option.
+# # Just for example:
+# resize-overlay-duration = 4s 200ms
+
+
+# The font families to use.
+# 
+# You can generate the list of valid values using the CLI:
+# 
+#     ghostty +list-fonts
+# 
+# This configuration can be repeated multiple times to specify preferred
+# fallback fonts when the requested codepoint is not available in the primary
+# font. This is particularly useful for multiple languages, symbolic fonts,
+# etc.
+# 
+# Notes on emoji specifically: On macOS, Ghostty by default will always use
+# Apple Color Emoji and on Linux will always use Noto Emoji. You can
+# override this behavior by specifying a font family here that contains
+# emoji glyphs.
+# 
+# The specific styles (bold, italic, bold italic) do not need to be
+# explicitly set. If a style is not set, then the regular style (font-family)
+# will be searched for stylistic variants. If a stylistic variant is not
+# found, Ghostty will use the regular style. This prevents falling back to a
+# different font family just to get a style such as bold. This also applies
+# if you explicitly specify a font family for a style. For example, if you
+# set `font-family-bold = FooBar` and "FooBar" cannot be found, Ghostty will
+# use whatever font is set for `font-family` for the bold style.
+# 
+# Finally, some styles may be synthesized if they are not supported.
+# For example, if a font does not have an italic style and no alternative
+# italic font is specified, Ghostty will synthesize an italic style by
+# applying a slant to the regular style. If you want to disable these
+# synthesized styles then you can use the `font-style` configurations
+# as documented below.
+# 
+# You can disable styles completely by using the `font-style` set of
+# configurations. See the documentation for `font-style` for more information.
+# 
+# If you want to overwrite a previous set value rather than append a fallback,
+# specify the value as `""` (empty string) to reset the list and then set the
+# new values. For example:
+# 
+#     font-family = ""
+#     font-family = "My Favorite Font"
+# 
+# Setting any of these as CLI arguments will automatically clear the
+# values set in configuration files so you don't need to specify
+# `--font-family=""` before setting a new value. You only need to specify
+# this within config files if you want to clear previously set values in
+# configuration files or on the CLI if you want to clear values set on the
+# CLI.
+# 
+# Changing this configuration at runtime will only affect new terminals, i.e.
+# new windows, tabs, etc.
+font-family = "IosevkaTerm Nerd Font"
+
+# The named font style to use for each of the requested terminal font styles.
+# This looks up the style based on the font style string advertised by the
+# font itself. For example, "Iosevka Heavy" has a style of "Heavy".
+# 
+# You can also use these fields to completely disable a font style. If you set
+# the value of the configuration below to literal `false` then that font style
+# will be disabled. If the running program in the terminal requests a disabled
+# font style, the regular font style will be used instead.
+# 
+# These are only valid if its corresponding font-family is also specified. If
+# no font-family is specified, then the font-style is ignored unless you're
+# disabling the font style.
+font-style = "Regular"
+
+font-style-bold = "Bold"
+font-style-italic = "Light Italic"
+font-style-bold-italic = "Medium Italic"
+
+# A theme to use. This can be a built-in theme name, a custom theme
+# name, or an absolute path to a custom theme file. Ghostty also supports
+# specifying a different theme to use for light and dark mode. Each
+# option is documented below.
+# 
+# If the theme is an absolute pathname, Ghostty will attempt to load that
+# file as a theme. If that file does not exist or is inaccessible, an error
+# will be logged and no other directories will be searched.
+# 
+# If the theme is not an absolute pathname, two different directories will be
+# searched for a file name that matches the theme. This is case sensitive on
+# systems with case-sensitive filesystems. It is an error for a theme name to
+# include path separators unless it is an absolute pathname.
+# 
+# The first directory is the `themes` subdirectory of your Ghostty
+# configuration directory. This is `$XDG_CONFIG_DIR/ghostty/themes` or
+# `~/.config/ghostty/themes`.
+# 
+# The second directory is the `themes` subdirectory of the Ghostty resources
+# directory. Ghostty ships with a multitude of themes that will be installed
+# into this directory. On macOS, this list is in the
+# `Ghostty.app/Contents/Resources/ghostty/themes` directory. On Linux, this
+# list is in the `share/ghostty/themes` directory (wherever you installed the
+# Ghostty "share" directory.
+# 
+# To see a list of available themes, run `ghostty +list-themes`.
+# 
+# A theme file is simply another Ghostty configuration file. They share
+# the same syntax and same configuration options. A theme can set any valid
+# configuration option so please do not use a theme file from an untrusted
+# source. The built-in themes are audited to only set safe configuration
+# options.
+# 
+# Some options cannot be set within theme files. The reason these are not
+# supported should be self-evident. A theme file cannot set `theme` or
+# `config-file`. At the time of writing this, Ghostty will not show any
+# warnings or errors if you set these options in a theme file but they will
+# be silently ignored.
+# 
+# Any additional colors specified via background, foreground, palette, etc.
+# will override the colors specified in the theme.
+# 
+# To specify a different theme for light and dark mode, use the following
+# syntax: `light:theme-name,dark:theme-name`. For example:
+# `light:rose-pine-dawn,dark:rose-pine`. Whitespace around all values are
+# trimmed and order of light and dark does not matter. Both light and dark
+# must be specified in this form. In this form, the theme used will be
+# based on the current desktop environment theme.
+# 
+# There are some known bugs with light/dark mode theming. These will
+# be fixed in a future update:
+# 
+#   - macOS: titlebar tabs style is not updated when switching themes.
+# 
+theme = "catppuccin-mocha.conf"
+
+# Treat Option key as Alt modifier for keybindings (e.g., Aerospace)
+# instead of using it to input special characters.
+# Set to "left", "right", or "true" (both) depending on preference.
+macos-option-as-alt = true

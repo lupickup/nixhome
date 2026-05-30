@@ -1,12 +1,11 @@
 # mkDotfilesFlake — flake builder for nixhome.
 #
-# Tailored for THIS repo's matrix (per GPT-5.5 rubber-duck critique):
+# Tailored for this repo's matrix:
 #   - Darwin (nix-darwin + home-manager) AND standalone home-manager.
 #   - NO NixOS path (not needed; can be added later).
 #   - Auto-wires `home-manager.users.${user}` on Darwin so Darwin host files
-#     don't have to re-declare users manually (the reference repo's mkFlake
-#     omits this, which is a foot-gun for our use case).
-#   - Hostname aliases: e.g. `alice@laptop` → `laptop`.
+#     don't have to re-declare users manually.
+#   - Hostname aliases: e.g. `lupickup@laptop` → `laptop`.
 #     Home Manager defaults `--flake .#$USER@$HOSTNAME` so aliases let users
 #     point cwd-resolved targets at canonical host configs.
 #   - Recursively auto-loads modules from `modules/home/` and `modules/darwin/`
@@ -20,7 +19,7 @@
 #     in lib.mkDotfilesFlake inputs {
 #       hosts = lib.mapHosts ./hosts;
 #       aliases = {
-#         "alice@laptop" = "laptop";
+#         "lupickup@laptop" = "laptop";
 #       };
 #     };
 #
@@ -29,8 +28,8 @@
 #   { lib, ... }:
 #   {
 #     system = "x86_64-linux";        # required
-#     username = "alice";              # required
-#     homeDirectory = "/home/alice";   # optional, defaults to /home/<username>
+#     username = "lupickup";              # required
+#     homeDirectory = "/home/lupickup";   # optional, defaults to /home/<username>
 #     # type = "darwin" | "home";      # optional, auto-detected from system
 #
 #     config = { config, pkgs, ... }: {

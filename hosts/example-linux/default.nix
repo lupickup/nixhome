@@ -7,8 +7,8 @@
 
 {
   system = "x86_64-linux";
-  username = "alice";
-  homeDirectory = "/home/alice";
+  username = "lupickup";
+  homeDirectory = "/home/lupickup";
 
   config = { config, pkgs, ... }: {
     dotfiles.context = {

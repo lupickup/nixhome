@@ -1,0 +1,228 @@
+#!/bin/bash
+# resolve-vscode-ssh-sock: Finds the best live SSH agent socket for the current
+# user, preferring forwarded Mac/VS Code/plain SSH agents and falling back to a
+# VM-local agent socket.
+#
+# Usage:
+#   eval "$(resolve-vscode-ssh-sock)"                        # export SSH_AUTH_SOCK
+#   resolve-vscode-ssh-sock --path                           # print socket path
+#   resolve-vscode-ssh-sock --path --key-file ~/.ssh/msft.pub
+#   resolve-vscode-ssh-sock --path --local-sock ~/.ssh/agent.sock
+#   resolve-vscode-ssh-sock --path --timeout 3
+#
+# Why this exists:
+# - VS Code Remote SSH leaves behind many stale symlinks under /run/user/$UID.
+# - Manual ssh -A sessions create sockets under /tmp/ssh-*/agent.*.
+# - Eternal Terminal forwards agents under /tmp/et_forward_sock_*/sock.
+# - Persistent shells (zellij/tmux) keep an old SSH_AUTH_SOCK after reconnects.
+# - Dev VMs may have a local ssh-agent fallback for a limited GitHub key.
+
+set -euo pipefail
+
+mode="export"
+required_key=""
+required_key_file=""
+prefer_sock="${SSH_AUTH_SOCK-}"
+local_sock="${DEVBOX_SSH_AUTH_SOCK:-$HOME/.ssh/agent.sock}"
+identity_timeout="${SSH_AGENT_SOCKET_TIMEOUT:-2}"
+
+usage() {
+  cat <<'EOF' >&2
+Usage: resolve-vscode-ssh-sock [--path|--export] [--key-file PATH] [--prefer SOCK] [--local-sock SOCK] [--timeout SECONDS]
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --path)
+      mode="path"
+      ;;
+    --export)
+      mode="export"
+      ;;
+    --key-file)
+      shift
+      [ $# -gt 0 ] || { usage; exit 2; }
+      required_key_file="$1"
+      if [ -f "$required_key_file" ]; then
+        required_key="$(awk 'NF {print $1" "$2; exit}' "$required_key_file" 2>/dev/null || true)"
+      fi
+      ;;
+    --prefer)
+      shift
+      [ $# -gt 0 ] || { usage; exit 2; }
+      prefer_sock="$1"
+      ;;
+    --local-sock)
+      shift
+      [ $# -gt 0 ] || { usage; exit 2; }
+      local_sock="$1"
+      ;;
+    --timeout)
+      shift
+      [ $# -gt 0 ] || { usage; exit 2; }
+      identity_timeout="$1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+socket_exists() {
+  local sock="$1"
+  [ -n "$sock" ] && [ -S "$sock" ]
+}
+
+socket_mtime() {
+  local sock="$1"
+  stat -c %Y "$sock" 2>/dev/null || echo 0
+}
+
+reap_timed_out_socket() {
+  local source="$1"
+  local sock="$2"
+  local parent
+
+  case "$source:$sock" in
+    env:/tmp/et_forward_sock_*/sock|et:/tmp/et_forward_sock_*/sock|\
+    env:/tmp/ssh-*/agent.*|manual:/tmp/ssh-*/agent.*|\
+    env:/tmp/auth-agent*/listener.sock|listener:/tmp/auth-agent*/listener.sock|\
+    env:/run/user/*/vscode-ssh-auth-sock-*|vscode:/run/user/*/vscode-ssh-auth-sock-*)
+      rm -f -- "$sock" 2>/dev/null || true
+      parent="$(dirname "$sock")"
+      case "$parent" in
+        /tmp/et_forward_sock_*|/tmp/ssh-*|/tmp/auth-agent*)
+          rmdir -- "$parent" 2>/dev/null || true
+          ;;
+      esac
+      ;;
+  esac
+}
+
+socket_identity_output() {
+  local source="$1"
+  local sock="$1"
+  local output status
+
+  sock="$2"
+  set +e
+  output="$(SSH_AUTH_SOCK="$sock" timeout "$identity_timeout" ssh-add -L 2>/dev/null)"
+  status=$?
+  set -e
+
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    reap_timed_out_socket "$source" "$sock"
+  fi
+  [ "$status" -eq 0 ] || return "$status"
+  printf '%s\n' "$output"
+}
+
+socket_matches_required_key() {
+  local source="$1"
+  local sock="$2"
+  local identities
+
+  identities="$(socket_identity_output "$source" "$sock")" || return 1
+  if [ -z "$required_key" ]; then
+    return 0
+  fi
+
+  awk 'NF {print $1" "$2}' <<<"$identities" | grep -Fxq "$required_key"
+}
+
+emit_candidates() {
+  local uid sock
+
+  if socket_exists "$prefer_sock"; then
+    printf '0|env|%s\n' "$prefer_sock"
+  fi
+
+  uid="$(id -u)"
+  for sock in /run/user/"$uid"/vscode-ssh-auth-sock-*; do
+    [ -e "$sock" ] || continue
+    printf '1|vscode|%s\n' "$sock"
+  done
+
+  for sock in /tmp/et_forward_sock_*/sock; do
+    [ -S "$sock" ] || continue
+    printf '1|et|%s\n' "$sock"
+  done
+
+  for sock in /tmp/ssh-*/agent.*; do
+    [ -S "$sock" ] || continue
+    printf '1|manual|%s\n' "$sock"
+  done
+
+  # MS DevBox / sshd forwards land here, not under /tmp/ssh-*.
+  for sock in /tmp/auth-agent*/listener.sock; do
+    [ -S "$sock" ] || continue
+    printf '1|listener|%s\n' "$sock"
+  done
+
+  for sock in /run/user/"$uid"/gcr/ssh /run/user/"$uid"/gcr/.ssh; do
+    socket_exists "$sock" || continue
+    printf '2|gcr|%s\n' "$sock"
+  done
+
+  for sock in /run/user/"$uid"/keyring/ssh /run/user/"$uid"/keyring/.ssh; do
+    socket_exists "$sock" || continue
+    printf '3|keyring|%s\n' "$sock"
+  done
+
+  if socket_exists "$local_sock"; then
+    printf '4|local|%s\n' "$local_sock"
+  fi
+
+  if [ -n "${XDG_RUNTIME_DIR:-}" ] && socket_exists "$XDG_RUNTIME_DIR/ssh-agent.socket"; then
+    printf '4|local-runtime|%s\n' "$XDG_RUNTIME_DIR/ssh-agent.socket"
+  fi
+}
+
+resolve_live_socket() {
+  local best_sock=""
+  local best_priority=99
+  local best_mtime=-1
+  local priority source sock mtime
+
+  while IFS='|' read -r priority source sock; do
+    [ -n "$sock" ] || continue
+    socket_exists "$sock" || continue
+    socket_matches_required_key "$source" "$sock" || continue
+
+    mtime="$(socket_mtime "$sock")"
+    if [ -z "$best_sock" ] \
+      || [ "$priority" -lt "$best_priority" ] \
+      || { [ "$priority" -eq "$best_priority" ] && [ "$mtime" -gt "$best_mtime" ]; }; then
+      best_sock="$sock"
+      best_priority="$priority"
+      best_mtime="$mtime"
+    fi
+  done < <(emit_candidates | awk -F'|' '!seen[$3]++')
+
+  printf '%s\n' "$best_sock"
+}
+
+sock="$(resolve_live_socket)"
+if [ -z "$sock" ]; then
+  if [ -n "$required_key_file" ]; then
+    echo "ERROR: No live forwarded or local SSH agent has the key from $required_key_file." >&2
+    echo "Hint: reconnect with agent forwarding, or load the VM-local fallback key with:" >&2
+    echo "  DEVBOX_SSH_AUTH_SOCK=${local_sock} ssh-add ${required_key_file%.pub}" >&2
+  else
+    echo "ERROR: No live SSH agent socket with usable identities found." >&2
+  fi
+  exit 1
+fi
+
+if [ "$mode" = "path" ]; then
+  printf '%s\n' "$sock"
+else
+  printf 'export SSH_AUTH_SOCK="%s"\n' "$sock"
+fi

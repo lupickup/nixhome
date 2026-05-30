@@ -3,55 +3,81 @@
 # (~/.copilot/skills/<name>) via mkOutOfStoreSymlink, so edits in either
 # location write back to the source.
 #
-# The skill source is a directory (typically containing SKILL.md +
-# optional scripts/ or references/) — directory-level symlink, matching
-# the karabiner precedent.
+# nixhome bundles a curated set of generic skills under `_bundled/`. Hosts
+# can opt in to any of them via `bundledSkills.<name>.enable = true`, and
+# layer their own private skills via `skills = { ... }`.
 #
-# Usage in a host or private overlay:
+# Usage in a host:
 #
 #   modules.home.skills = {
 #     enable = true;
+#     bundledSkills.checkpoint.enable = true;          # nixhome-shipped
 #     skills = {
-#       checkpoint = "${dotfilesDir}/config/skills/checkpoint";
-#       my-other = "${dotfilesDir}/config/skills/my-other";
+#       my-private = "${dotfilesDir}/config/skills/my-private";   # overlay
 #     };
 #   };
-#
-# This OSS module deploys an empty skill set by default. Forkers supply
-# their own skill directories.
 
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.modules.home.skills;
+
+  bundledRoot = ./_bundled;
+  # Auto-discover bundled skill names from the directory.
+  bundledNames =
+    let entries = builtins.readDir bundledRoot;
+    in builtins.attrNames (lib.filterAttrs (n: v: v == "directory" && !(lib.hasPrefix "_" n)) entries);
 in
 {
   options.modules.home.skills = {
     enable = lib.mkEnableOption "user-authored AI assistant skills (Claude + Copilot)";
+
+    bundledSkills = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options.enable = lib.mkEnableOption "this bundled skill";
+      });
+      default = lib.genAttrs bundledNames (_: { });
+      description = ''
+        Skills shipped with nixhome. Enable individually:
+          modules.home.skills.bundledSkills.checkpoint.enable = true;
+      '';
+    };
 
     skills = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
       default = { };
       example = lib.literalExpression ''
         {
-          checkpoint = "''${dotfilesDir}/config/skills/checkpoint";
+          my-private = "''${dotfilesDir}/config/skills/my-private";
         }
       '';
       description = ''
-        Map of skill name → source directory. Each entry is symlinked into
-        both ~/.claude/skills/<name> and ~/.copilot/skills/<name>.
+        Map of skill name → source directory for additional skills outside
+        nixhome's bundled set. Each entry is symlinked into both
+        ~/.claude/skills/<name> and ~/.copilot/skills/<name>.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
     home.file = lib.mkMerge (
-      lib.mapAttrsToList (skillName: skillPath: {
+      # User-provided skills
+      (lib.mapAttrsToList (skillName: skillPath: {
         ".claude/skills/${skillName}".source =
           config.lib.file.mkOutOfStoreSymlink (toString skillPath);
         ".copilot/skills/${skillName}".source =
           config.lib.file.mkOutOfStoreSymlink (toString skillPath);
-      }) cfg.skills
+      }) cfg.skills)
+      ++
+      # Bundled skills (enabled subset)
+      (lib.mapAttrsToList (skillName: skillCfg:
+        lib.mkIf skillCfg.enable {
+          ".claude/skills/${skillName}".source =
+            config.lib.file.mkOutOfStoreSymlink (toString (bundledRoot + "/${skillName}"));
+          ".copilot/skills/${skillName}".source =
+            config.lib.file.mkOutOfStoreSymlink (toString (bundledRoot + "/${skillName}"));
+        }
+      ) cfg.bundledSkills)
     );
   };
 }

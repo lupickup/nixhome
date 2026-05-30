@@ -1,21 +1,19 @@
 # modules/home/shell/zellij.nix — Zellij terminal multiplexer with optional
 # custom config and pinned WASM plugins.
 #
-# The OSS module enables zellij with a default theme and clipboard backend
-# derived from dotfiles.context.clipboardBackend. To use a custom config.kdl
-# and install third-party plugins:
-#
-#   modules.home.shell.zellij = {
-#     enable = true;
-#     configFile = "''${dotfilesDir}/config/zellij/config.kdl";
-#     pluginsInstallScript = "''${dotfilesDir}/scripts/install-zellij-plugins.sh";
-#   };
+# nixhome ships an opinionated `config/zellij/config.kdl` and a pinned
+# plugin installer script (`scripts/install-zellij-plugins.sh`). Hosts get
+# both by default; override `configFile` or `pluginsInstallScript` to use
+# your own.
 
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.modules.home.shell.zellij;
   ctx = config.dotfiles.context;
+
+  bundledConfig = ../../../config/zellij/config.kdl;
+  bundledPluginsScript = ../../../scripts/install-zellij-plugins.sh;
 
   copyCommand =
     if ctx.clipboardBackend == "pbcopy" then "pbcopy"
@@ -34,13 +32,26 @@ in
       description = "Zellij theme name. Must be available in the active config.";
     };
 
+    useBundledConfig = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Use nixhome's bundled config.kdl when `configFile` is null.";
+    };
+
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
       description = ''
         Optional path to a custom zellij config.kdl. Symlinked to
-        ~/.config/zellij/config.kdl via mkOutOfStoreSymlink.
+        ~/.config/zellij/config.kdl via mkOutOfStoreSymlink. If null and
+        `useBundledConfig` is true, nixhome's bundled config is used.
       '';
+    };
+
+    useBundledPlugins = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Use nixhome's bundled install-zellij-plugins.sh when `pluginsInstallScript` is null.";
     };
 
     pluginsInstallScript = lib.mkOption {
@@ -49,8 +60,9 @@ in
       description = ''
         Optional path to an executable script that fetches pinned WASM
         plugins into ~/.config/zellij/plugins/. Runs on every
-        home-manager switch via an activation hook. Should be idempotent
-        (skip downloads when on-disk version matches the pin).
+        home-manager switch via an activation hook. Should be idempotent.
+        If null and `useBundledPlugins` is true, nixhome's bundled script
+        is used (matches the plugin set assumed by the bundled config.kdl).
       '';
     };
   };
@@ -67,15 +79,25 @@ in
       };
     };
 
-    xdg.configFile = lib.mkIf (cfg.configFile != null) {
-      "zellij/config.kdl".source =
-        config.lib.file.mkOutOfStoreSymlink (toString cfg.configFile);
-    };
+    xdg.configFile = lib.mkMerge [
+      (lib.mkIf (cfg.configFile != null) {
+        "zellij/config.kdl".source =
+          config.lib.file.mkOutOfStoreSymlink (toString cfg.configFile);
+      })
+      (lib.mkIf (cfg.configFile == null && cfg.useBundledConfig) {
+        "zellij/config.kdl".source = bundledConfig;
+      })
+    ];
 
-    home.activation = lib.mkIf (cfg.pluginsInstallScript != null) {
+    home.activation = let
+      script =
+        if cfg.pluginsInstallScript != null then toString cfg.pluginsInstallScript
+        else if cfg.useBundledPlugins then toString bundledPluginsScript
+        else null;
+    in lib.mkIf (script != null) {
       installZellijPlugins = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
         if command -v curl >/dev/null 2>&1; then
-          bash "${toString cfg.pluginsInstallScript}" || true
+          bash "${script}" || true
         fi
       '';
     };

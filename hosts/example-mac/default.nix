@@ -7,8 +7,8 @@
 
 {
   system = "aarch64-darwin";
-  username = "alice";
-  homeDirectory = "/Users/alice";
+  username = "lupickup";
+  homeDirectory = "/Users/lupickup";
 
   config = { config, pkgs, ... }: {
     dotfiles.context = {
@@ -25,7 +25,7 @@
 
     # Required for Darwin builds.
     system.stateVersion = 5;
-    system.primaryUser = "alice";
+    system.primaryUser = "lupickup";
 
     # No modules enabled by default — forker turns on what they want here.
   };
