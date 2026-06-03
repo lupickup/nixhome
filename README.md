@@ -168,10 +168,17 @@ Anywhere — e.g. `~/dotfiles/flake.nix`:
     modules.home.skills = {
       enable = true;
       bundledSkills.checkpoint.enable = true;
+      bundledSkills."html-effectiveness".enable = true;
+      bundledSkills."visual-explainer".enable = true;
     };
   };
 }
 ```
+
+Bundled skills are installed into Claude Code, GitHub Copilot CLI, Codex CLI,
+and Pi skill directories. Bundled skills that include `commands/*.md` also
+install namespaced Claude commands under `~/.claude/commands/<skill>/` and Pi
+prompts under `~/.pi/agent/prompts/`.
 
 ### 3. Switch
 
@@ -254,7 +261,7 @@ lib.mkDotfilesFlake inputs {
 | Add a hostname alias | your overlay's `flake.nix` `aliases = { ... }` |
 | Add a bundled default config file | `nixhome/config/<app>/` + wire it as a default in the relevant module |
 | Add a bundled helper script | `nixhome/scripts/<name>` + reference from the relevant module |
-| Add a bundled AI assistant skill | `nixhome/modules/home/skills/_bundled/<name>/SKILL.md` (auto-discovered) |
+| Add a bundled AI assistant skill | `nixhome/modules/home/skills/_bundled/<name>/` (auto-discovered; optional `commands/*.md` install as Claude commands and Pi prompts) |
 | Add a new context axis | `nixhome/modules/base/default.nix` |
 
 ## What it deliberately doesn't do

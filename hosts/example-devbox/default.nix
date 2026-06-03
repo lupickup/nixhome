@@ -64,6 +64,8 @@
     modules.home.skills = {
       enable = true;
       bundledSkills.checkpoint.enable = true;
+      bundledSkills."html-effectiveness".enable = true;
+      bundledSkills."visual-explainer".enable = true;
     };
 
     # Linux platform glue + Linuxbrew path.
