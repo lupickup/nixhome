@@ -15,7 +15,8 @@
 #
 # nixhome bundles a curated set of generic skills under `_bundled/`. Hosts
 # can opt in to any of them via `bundledSkills.<name>.enable = true`, and
-# layer their own private skills via `skills = { ... }`.
+# layer their own private skills via `skills = { ... }`. Sources and update
+# instructions for bundled skills live in `modules/home/skills/SOURCES.md`.
 #
 # Usage in a host:
 #

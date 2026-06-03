@@ -261,7 +261,7 @@ lib.mkDotfilesFlake inputs {
 | Add a hostname alias | your overlay's `flake.nix` `aliases = { ... }` |
 | Add a bundled default config file | `nixhome/config/<app>/` + wire it as a default in the relevant module |
 | Add a bundled helper script | `nixhome/scripts/<name>` + reference from the relevant module |
-| Add a bundled AI assistant skill | `nixhome/modules/home/skills/_bundled/<name>/` (auto-discovered; optional `commands/*.md` install as Claude commands and Pi prompts) |
+| Add a bundled AI assistant skill | `nixhome/modules/home/skills/_bundled/<name>/` (auto-discovered; optional `commands/*.md` install as Claude commands and Pi prompts; record source in `modules/home/skills/SOURCES.md`) |
 | Add a new context axis | `nixhome/modules/base/default.nix` |
 
 ## What it deliberately doesn't do

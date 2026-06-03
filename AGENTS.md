@@ -50,7 +50,7 @@ implementation.
 | Add a generic OSS module | `modules/home/<cat>/<app>.nix` (PR welcome) |
 | Add a bundled config file | `config/<app>/...` + reference as a default in the module |
 | Add a bundled helper script | `scripts/<name>` + reference from the module |
-| Add a bundled AI skill | `modules/home/skills/_bundled/<name>/` (auto-discovered) |
+| Add a bundled AI skill | `modules/home/skills/_bundled/<name>/` (auto-discovered) and record provenance in `modules/home/skills/SOURCES.md` |
 | Add a new context axis | `modules/base/default.nix` (sparingly!) |
 | Add a new example host | `hosts/example-<name>/default.nix` |
 
