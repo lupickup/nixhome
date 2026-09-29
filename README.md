@@ -195,6 +195,21 @@ fetches it on demand from GitHub and pins it in your `flake.lock`.
 
 ## Bootstrap on a new machine
 
+**Windows (WSL):** one command from any PowerShell window. It installs the
+WSL distro, clones your overlay inside WSL (auth goes through the Windows Git
+Credential Manager, so a private repo works without SSH keys), runs its
+`./install`, then applies the overlay's `windows/winget.dsc.yaml` if present:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/lupickup/nixhome/main/scripts/bootstrap-windows.ps1))) `
+    -DotfilesRepo https://github.com/<you>/dotfiles.git   # add -DryRun to preview
+```
+
+It can be rerun. On a brand-new PC, the first run stops after `wsl --install`;
+create the Linux user, then run it again.
+
+**macOS / Linux:**
+
 You already have a private overlay flake. You're on a fresh box:
 
 ```sh
