@@ -45,7 +45,7 @@ modules/home/            Home-Manager app modules. Each has its own enable.
   cli-tools.nix          Coming soon (currently in private overlay).
 
 modules/darwin/          nix-darwin system modules.
-  {nix-daemon,homebrew,launchd,system-defaults,touch-id-sudo}.nix
+  {nix-daemon,homebrew,launchd,system-defaults,touch-id-sudo,codex}.nix
 
 config/                  Bundled default configs (used by modules above).
   starship.toml          catppuccin_mocha theme.
