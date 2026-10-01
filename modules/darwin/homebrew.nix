@@ -46,7 +46,7 @@ in
     };
   };
 
-  config = lib.mkIf (cfg.enable && pkgs.stdenv.isDarwin && mode == "nix-homebrew") {
+  config = lib.mkIf (cfg.enable && pkgs.stdenv.hostPlatform.isDarwin && mode == "nix-homebrew") {
     homebrew = {
       enable = true;
       inherit (cfg) taps brews casks;

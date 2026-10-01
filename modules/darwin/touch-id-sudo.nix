@@ -14,7 +14,7 @@ in
     enable = lib.mkEnableOption "TouchID-for-sudo via PAM";
   };
 
-  config = lib.mkIf (cfg.enable && pkgs.stdenv.isDarwin && !ctx.context.managedHost) {
+  config = lib.mkIf (cfg.enable && pkgs.stdenv.hostPlatform.isDarwin && !ctx.context.managedHost) {
     security.pam.services.sudo_local.touchIdAuth = true;
   };
 }
