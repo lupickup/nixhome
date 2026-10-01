@@ -40,6 +40,7 @@ modules/home/            Home-Manager app modules. Each has its own enable.
   shell/{zsh,starship,zellij,shells,git,ssh}.nix
   dev/{claude,codex,opencode,copilot,gsd,dev-box}.nix
   platform/{linux,wsl,darwin}.nix
+  platform/config-root.nix  Opt-in protection for the live XDG config root.
   skills/                Claude+Copilot skill installer. Bundles checkpoint.
   cli-tools.nix          Coming soon (currently in private overlay).
 
@@ -115,6 +116,19 @@ let cfg = config.modules.home.shell.starship; in
 **Rule:** every module is inert until its `enable` flag fires. Auto-discovery
 loads every module into every config, so modules MUST guard their `config`
 attribute with `mkIf cfg.enable {…}`.
+
+### Keeping runtime configuration out of source checkouts
+
+Enable `modules.home.platform.config-root.enable` and list checkout paths in
+`forbiddenRoots` to require a real XDG config directory outside those paths.
+Individual app symlinks remain allowed. The module rejects home-file
+declarations that replace the root and checks the live layout before Home
+Manager writes links. `mkDotfilesFlake` also runs this opt-in check during
+Darwin pre-activation, before system changes.
+
+The check is read-only and never repairs or deletes data automatically.
+Run its regression tests with
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests`.
 
 ## Forking
 

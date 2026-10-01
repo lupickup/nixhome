@@ -186,6 +186,17 @@ let
           # via sharedModules. The host's primary user is auto-declared below
           # so even hosts that don't explicitly create the user get the modules.
           inputs.home-manager.darwinModules.home-manager
+          ({ config, lib, pkgs, ... }: {
+            system.activationScripts.preActivation.text = lib.mkBefore (
+              lib.concatMapStringsSep "\n" (user:
+                let guard = user.modules.home.platform.config-root;
+                in lib.optionalString guard.enable ''
+                  ${pkgs.bash}/bin/bash ${../scripts/check-config-home} \
+                    ${lib.escapeShellArgs ([ user.xdg.configHome ] ++ guard.forbiddenRoots)} || exit 1
+                ''
+              ) (lib.attrValues config.home-manager.users)
+            );
+          })
           {
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;

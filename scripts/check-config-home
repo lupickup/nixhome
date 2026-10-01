@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf 'config-root: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -ge 1 ]] || fail "usage: check-config-home CONFIG_HOME [FORBIDDEN_ROOT ...]"
+config_home="$1"
+shift
+while [[ "$config_home" != "/" && "$config_home" = */ ]]; do
+  config_home="${config_home%/}"
+done
+
+[[ "$config_home" = /* ]] || fail "config home must be absolute: $config_home"
+case "$config_home/" in
+  */../*|*/./*) fail "config home must not contain . or .. components: $config_home" ;;
+esac
+[[ ! -L "$config_home" ]] ||
+  fail "$config_home is a symlink. Preserve its contents and repair it to a real directory before continuing."
+[[ ! -e "$config_home" || -d "$config_home" ]] ||
+  fail "$config_home exists but is not a directory."
+
+resolve_directory() {
+  local path="$1" suffix=""
+  [[ "$path" = /* ]] || fail "source root must be absolute: $path"
+  while [[ ! -d "$path" ]]; do
+    [[ ! -e "$path" && ! -L "$path" ]] || fail "cannot resolve directory: $path"
+    suffix="/${path##*/}${suffix}"
+    path="${path%/*}"
+    [[ -n "$path" ]] || path="/"
+  done
+  path="$(CDPATH= cd -P -- "$path" && pwd -P)"
+  printf '%s%s\n' "${path%/}" "$suffix"
+}
+
+resolved_home="$(resolve_directory "$config_home")"
+for root in "$@"; do
+  resolved_root="$(resolve_directory "$root")"
+  case "$resolved_home/" in
+    "$resolved_root/"*)
+      fail "$config_home resolves inside source root $root. Only individual app configs may be linked into a checkout."
+      ;;
+  esac
+done
