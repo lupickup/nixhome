@@ -5,14 +5,25 @@
 # match blocks, identity files, IdentityAgent paths) come from the host or
 # an identity profile via the options below.
 #
+# modules.home.shell.ssh.settings uses OpenSSH directive names, for example:
+#   settings."git.example.org" = { User = "git"; IdentityFile = "~/.ssh/git"; };
+# The deprecated matchBlocks option retains Home Manager's legacy field names.
+#
 # On managedHost=true, this whole module is inert (the corporate host's own
 # /etc/ssh/ssh_config and ssh helpers are honoured).
 
-{ config, lib, pkgs, ... }:
+{ config, lib, options, ... }:
 
 let
   cfg = config.modules.home.shell.ssh;
   ctx = config.dotfiles.context;
+  hasLegacyBlocks = cfg.matchBlocks != { };
+  wildcardSettings = {
+    AddKeysToAgent = if cfg.addKeysToAgent then "yes" else "no";
+    ForwardAgent = cfg.forwardAgent;
+  } // lib.optionalAttrs (cfg.identityAgent != null) {
+    IdentityAgent = "\"${cfg.identityAgent}\"";
+  };
 in
 {
   options.modules.home.shell.ssh = {
@@ -44,12 +55,26 @@ in
       description = "List of Include paths added to ~/.ssh/config.";
     };
 
+    settings = lib.mkOption {
+      type = options.programs.ssh.settings.type;
+      default = { };
+      description = ''
+        Extra programs.ssh.settings blocks using OpenSSH directive names
+        (HostName, User, IdentityFile, ProxyCommand, etc.). Bare attribute
+        names become Host patterns; literal Host/Match headers and
+        lib.hm.dag ordering are supported. Includes precede all blocks,
+        and the default "*" block is emitted last.
+      '';
+    };
+
     matchBlocks = lib.mkOption {
       type = lib.types.attrsOf lib.types.attrs;
       default = { };
+      visible = false;
       description = ''
-        Extra programs.ssh.matchBlocks entries (e.g. github.com-work,
-        github.com-personal). Merged with the default wildcard block.
+        Deprecated legacy SSH blocks. Use settings with OpenSSH directive
+        names instead. Legacy fields, extraOptions and DAG ordering are
+        preserved by Home Manager's matchBlocks compatibility converter.
       '';
     };
 
@@ -69,23 +94,36 @@ in
   };
 
   config = lib.mkIf (cfg.enable && !ctx.managedHost) {
+    warnings = lib.optional hasLegacyBlocks ''
+      modules.home.shell.ssh.matchBlocks is deprecated. Use
+      modules.home.shell.ssh.settings with OpenSSH directive names, and
+      move extraOptions directives directly into each settings block.
+    '';
+
     programs.ssh = {
       enable = true;
       enableDefaultConfig = false;
 
       includes = cfg.includes;
 
-      matchBlocks = lib.mkMerge [
+      settings = lib.mkMerge [
+        (lib.mkIf (!hasLegacyBlocks) { "*" = wildcardSettings; })
+        (lib.mkAliasDefinitions options.modules.home.shell.ssh.settings)
+      ];
+
+      # A plain rename cannot translate legacy field names or extraOptions.
+      # Merge defaults here so legacy mkForce overrides survive conversion.
+      matchBlocks = lib.mkIf hasLegacyBlocks (lib.mkMerge [
         {
           "*" = {
-            addKeysToAgent = if cfg.addKeysToAgent then "yes" else "no";
-            forwardAgent = cfg.forwardAgent;
+            addKeysToAgent = wildcardSettings.AddKeysToAgent;
+            forwardAgent = wildcardSettings.ForwardAgent;
           } // lib.optionalAttrs (cfg.identityAgent != null) {
-            identityAgent = "\"${cfg.identityAgent}\"";
+            identityAgent = wildcardSettings.IdentityAgent;
           };
         }
         cfg.matchBlocks
-      ];
+      ]);
     };
 
     home.file = lib.mkMerge (
