@@ -99,9 +99,14 @@ nix eval .#darwinConfigurations.example-mac.config.system.build.toplevel.drvPath
 
 After a change worth picking up downstream:
 
-1. Commit + push nixhome.
-2. In any consuming private overlay: `nix flake update nixhome` →
-   commit the bumped `flake.lock`.
+1. Validate and commit the intended nixhome changes, preserving unrelated work.
+2. In a consuming overlay that imports nixhome as a Git submodule, commit
+   the updated submodule pointer. In an overlay that consumes a flake input,
+   run `nix flake update nixhome` and commit the updated lockfile instead.
+3. When publication is requested, push nixhome before publishing any overlay
+   commit that refers to it. A local commit does not imply permission to push
+   or activate a host configuration.
 
-If a downstream overlay is using `path:` instead of `github:` for local
-iteration, the lock-bump happens automatically on next `nix flake update`.
+For explicitly opted-in unattended repositories, see
+[the dedicated SSH signing helper](docs/git-agent-signing.md). Keep private
+keys outside Git and the Nix store; never disable signing to bypass a blocker.
