@@ -99,13 +99,19 @@ nix eval .#darwinConfigurations.example-mac.config.system.build.toplevel.drvPath
 
 After a change worth picking up downstream:
 
-1. Validate and commit the intended nixhome changes, preserving unrelated work.
-2. In a consuming overlay that imports nixhome as a Git submodule, commit
+1. Fetch and reconcile with the remote default branch (`main` in this repo).
+   Preserve unrelated work and intentionally unfinished feature branches. Stop
+   on unresolved merge conflicts; never force-push or discard someone else's work.
+2. Validate and sign the intended nixhome commits, then push completed work to
+   the default branch as part of normal completion. No separate push approval
+   is needed for authorized implementation. Verify the working tree is clean
+   and the local default branch matches its remote.
+3. In a consuming overlay that imports nixhome as a Git submodule, commit
    the updated submodule pointer. In an overlay that consumes a flake input,
    run `nix flake update nixhome` and commit the updated lockfile instead.
-3. When publication is requested, push nixhome before publishing any overlay
-   commit that refers to it. A local commit does not imply permission to push
-   or activate a host configuration.
+4. Always publish nixhome before an overlay commit that refers to it. Follow
+   the overlay's completion policy for publishing that commit. Synchronizing
+   Git does not authorize activating a host configuration.
 
 For explicitly opted-in unattended repositories, see
 [the dedicated SSH signing helper](docs/git-agent-signing.md). Keep private
