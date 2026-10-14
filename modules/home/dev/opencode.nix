@@ -1,7 +1,6 @@
 # modules/home/dev/opencode.nix — OpenCode configuration.
 #
 # Symlinks the user's chosen opencode.jsonc into ~/.config/opencode/.
-# Often paired with modules.home.dev.gsd for the source-build scripts.
 
 { config, lib, pkgs, ... }:
 

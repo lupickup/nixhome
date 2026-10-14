@@ -95,8 +95,7 @@ in
         description = ''
           Default AI tool routing. `anthropic` = Claude Code primary,
           native web search. `copilot` = GitHub Copilot primary, brave search
-          fallback. Read by GSD preference selection, opencode config
-          variant, codex config variant.
+          fallback. Read by opencode config variant and codex config variant.
         '';
       };
 

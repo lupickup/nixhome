@@ -38,7 +38,7 @@ modules/base/            Loaded for EVERY config. Declares dotfiles.context.*
 
 modules/home/            Home-Manager app modules. Each has its own enable.
   shell/{zsh,starship,zellij,shells,git,ssh}.nix
-  dev/{claude,codex,opencode,copilot,gsd,dev-box}.nix
+  dev/{claude,codex,opencode,copilot,dev-box}.nix
   platform/{linux,wsl,darwin}.nix
   skills/                Claude+Copilot skill installer. Bundles checkpoint.
   cli-tools.nix          Coming soon (currently in private overlay).
@@ -76,7 +76,7 @@ typed, semantic option set declared in `modules/base/`:
 | `identity` | `personal` \| `microsoft` \| `linkedin` | Activates matching profile. |
 | `capability` | `minimal-shell` \| `dev` \| `desktop` | Coarse package set. |
 | `managedHost` | bool | When true, ssh/PAM/etc. modules go inert. |
-| `aiProfile` | `anthropic` \| `copilot` | Routes GSD / Codex / OpenCode. |
+| `aiProfile` | `anthropic` \| `copilot` | Routes Codex / OpenCode. |
 | `credentialBackend` | `none` \| `linux-gcm` \| `windows-gcm-wsl` \| `macos-gcm` | Drives git credential.helper. |
 | `clipboardBackend` | `wl-clipboard` \| `pbcopy` \| `clip-exe-wsl` \| `xclip` \| `none` | zellij copy_command, etc. |
 
