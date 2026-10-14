@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Opt in a repository to a separate, unattended SSH signing key."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+BACKUP_NAME = "git-agent-signing-backup.json"
+KEY_NAME = "signing-key"
+CONFIG_KEYS = (
+    "user.signingKey",
+    "gpg.format",
+    "gpg.ssh.program",
+    "gpg.ssh.allowedSignersFile",
+    "commit.gpgSign",
+    "tag.gpgSign",
+)
+
+
+def run(args, **kwargs):
+    return subprocess.run(
+        args, check=True, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, timeout=30, **kwargs
+    ).stdout.strip()
+
+
+def git(repo, *args):
+    # Explicit repository arguments should win over an enclosing hook/session.
+    env = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        env.pop(name, None)
+    return run(["git", "-C", str(repo), *args], env=env)
+
+
+def state_dir():
+    root = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    if not root.is_absolute():
+        raise ValueError("XDG_STATE_HOME must be an absolute path")
+    return root / "git-agent-signing"
+
+
+def private_file(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError(f"Expected an owned regular file: {path}")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise ValueError(f"File must be accessible only to its owner: {path}")
+
+
+def exclusive_write(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(text)
+
+
+def public_key(key):
+    private_file(key)
+    value = run(["ssh-keygen", "-y", "-P", "", "-f", str(key)])
+    if not value.startswith("ssh-ed25519 "):
+        raise ValueError("The signing key must be an unencrypted Ed25519 key")
+    return " ".join(value.split()[:2])
+
+
+def existing_key():
+    directory = state_dir()
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError(f"Expected an owned state directory: {directory}")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError(f"State directory must have mode 0700: {directory}")
+    key = directory / KEY_NAME
+    return key, public_key(key)
+
+
+def initialize():
+    directory = state_dir()
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError(f"Expected an owned state directory: {directory}")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError(f"State directory must have mode 0700: {directory}")
+    key = directory / KEY_NAME
+    if not key.exists() and not key.is_symlink():
+        # Generate privately, then install without overwriting a concurrent init.
+        with tempfile.TemporaryDirectory(dir=directory) as scratch:
+            generated = Path(scratch) / KEY_NAME
+            run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+                 "git-agent-signing", "-f", str(generated)])
+            try:
+                os.link(generated, key)
+            except FileExistsError:
+                pass
+    key, public = existing_key()
+    pubfile = key.with_suffix(".pub")
+    try:
+        exclusive_write(pubfile, public + " git-agent-signing\n")
+    except FileExistsError:
+        private_file(pubfile)
+        if " ".join(pubfile.read_text().split()[:2]) != public:
+            raise ValueError(f"Public key does not match the private key: {pubfile}")
+    print(f"Signing key ready: {key}")
+    print(f"Public key: {pubfile}")
+
+
+def local_values(repo, name):
+    try:
+        return git(repo, "config", "--local", "--null", "--get-all", name).split("\0")[:-1]
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1:
+            return []
+        raise
+
+
+def snapshot(repo):
+    return {name: local_values(repo, name) for name in CONFIG_KEYS}
+
+
+def apply_values(repo, values):
+    for name, entries in values.items():
+        if local_values(repo, name):
+            git(repo, "config", "--local", "--unset-all", name)
+        for value in entries:
+            git(repo, "config", "--local", "--add", name, value)
+
+
+def backup_path(repo):
+    return Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")) / BACKUP_NAME
+
+
+def read_backup(path):
+    private_file(path)
+    value = json.loads(path.read_text())
+    if value.get("version") != 1:
+        raise ValueError(f"Unsupported signing backup: {path}")
+    for field in ("previous", "configured"):
+        entries = value.get(field)
+        if not isinstance(entries, dict) or set(entries) != set(CONFIG_KEYS):
+            raise ValueError(f"Invalid signing backup: {path}")
+        if any(not isinstance(vals, list) or any(not isinstance(v, str) for v in vals)
+               for vals in entries.values()):
+            raise ValueError(f"Invalid signing backup: {path}")
+    return value
+
+
+def enable(repo):
+    key, public = existing_key()
+    wrapper = Path(__file__).resolve().with_name("git-file-ssh-sign")
+    if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
+        raise ValueError(f"Signing wrapper must be executable: {wrapper}")
+    email = git(repo, "config", "user.email")
+    if not email or any(c.isspace() or c in ',"\\#*?![]' for c in email):
+        raise ValueError("Set a user.email usable as one SSH allowed-signers principal")
+    signer = key.parent / ("allowed-signers-" + hashlib.sha256(email.encode()).hexdigest()[:20])
+    signer_text = f"{email} {public}\n"
+    try:
+        exclusive_write(signer, signer_text)
+    except FileExistsError:
+        private_file(signer)
+        if signer.read_text() != signer_text:
+            raise ValueError(f"Existing allowed-signers file differs: {signer}")
+    desired = dict(zip(CONFIG_KEYS, ([str(key)], ["ssh"], [str(wrapper)],
+                                  [str(signer)], ["true"], ["true"])))
+    path = backup_path(repo)
+    current = snapshot(repo)
+    if path.exists() or path.is_symlink():
+        saved = read_backup(path)
+        if current != saved["configured"] or desired != saved["configured"]:
+            raise ValueError("Signing settings changed; disable or reconcile the saved backup first")
+        print(f"Repository signing already enabled: {repo.resolve()}")
+        return
+    saved = {"version": 1, "previous": current, "configured": desired}
+    exclusive_write(path, json.dumps(saved, indent=2) + "\n")
+    try:
+        apply_values(repo, desired)
+    except Exception:
+        apply_values(repo, current)
+        path.unlink()
+        raise
+    print(f"Repository signing enabled: {repo.resolve()}")
+
+
+def disable(repo):
+    path = backup_path(repo)
+    if not path.exists() and not path.is_symlink():
+        raise ValueError("No signing backup exists for this repository")
+    saved = read_backup(path)
+    if snapshot(repo) != saved["configured"]:
+        raise ValueError(f"Signing settings changed; reconcile them with the backup before disabling: {path}")
+    apply_values(repo, saved["previous"])
+    path.unlink()
+    print(f"Previous repository signing settings restored: {repo.resolve()}")
+
+
+def status(repo):
+    path = backup_path(repo)
+    if not path.exists() and not path.is_symlink():
+        print("Repository has no git-agent-signing override")
+        return
+    saved = read_backup(path)
+    print("Repository signing: " + ("enabled" if snapshot(repo) == saved["configured"] else "settings changed"))
+    print(f"Rollback record: {path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("init", help="create a separate unencrypted signing key")
+    for command in ("enable", "disable", "status"):
+        sub = commands.add_parser(command)
+        sub.add_argument("repo", nargs="?", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+    try:
+        if args.command == "init":
+            initialize()
+        else:
+            {"enable": enable, "disable": disable, "status": status}[args.command](args.repo)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Child commands may handle key material: never print their captured output.
+        print(f"git-agent-signing: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
