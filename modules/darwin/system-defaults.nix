@@ -40,7 +40,7 @@ in
     };
   };
 
-  config = lib.mkIf (cfg.enable && pkgs.stdenv.isDarwin) {
+  config = lib.mkIf (cfg.enable && pkgs.stdenv.hostPlatform.isDarwin) {
     system.defaults = {
       dock.autohide = cfg.dockAutohide;
       dock.mru-spaces = false;

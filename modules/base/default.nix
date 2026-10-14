@@ -26,8 +26,8 @@
 let
   inherit (lib) mkOption types;
 
-  isDarwinHost = pkgs.stdenv.isDarwin;
-  isLinuxHost = pkgs.stdenv.isLinux;
+  isDarwinHost = pkgs.stdenv.hostPlatform.isDarwin;
+  isLinuxHost = pkgs.stdenv.hostPlatform.isLinux;
 in
 {
   options.dotfiles = {

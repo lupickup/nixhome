@@ -1,10 +1,16 @@
 # modules/home/dev/codex.nix — Codex CLI configuration.
 #
-# Codex itself isn't packaged here. This module just symlinks the user's
-# ~/.config/codex/config.toml to one of their config files. The choice is
-# typically driven by dotfiles.context.aiProfile but this module is
-# intentionally NOT identity-aware — the host or identity profile passes
-# the right path in via `configFile`.
+# Codex itself isn't packaged here. This module links the user's
+# ~/.config/codex/config.toml to a writable, out-of-store config file, so
+# Codex and its desktop app can keep writing settings back while the file
+# stays tracked in the user's repo. The host passes the path via
+# `configFile`; this module is intentionally not identity-aware.
+#
+# Keep tracked configs to defaults worth persisting. Model-pinned profiles
+# go stale quickly, and Codex 0.134+ rejects a top-level `profile = "..."`
+# selector and `[profiles.<name>]` tables; use `<name>.config.toml` files
+# with `codex --profile <name>` instead. For policy the app must not relax,
+# use system requirements (see modules/darwin/codex.nix).
 
 { config, lib, pkgs, ... }:
 
@@ -28,7 +34,7 @@ in
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      description = "Path to a codex config.toml. Symlinked to ~/.config/codex/config.toml.";
+      description = "Path to a codex config.toml. Linked writable (out-of-store) to ~/.config/codex/config.toml.";
     };
 
     workspaceConfigFiles = lib.mkOption {
@@ -50,7 +56,6 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          codex-copilot-auth = "''${dotfilesDir}/scripts/codex-copilot-auth";
           codex-workspace = "''${dotfilesDir}/scripts/codex-workspace.sh";
         }
       '';

@@ -14,7 +14,7 @@ in
 {
   # No options of its own — reads from dotfiles.darwin.nixInstaller in base.
 
-  config = lib.mkIf pkgs.stdenv.isDarwin {
+  config = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
     nix.enable = lib.mkDefault (!useDeterminate);
     nix.settings.experimental-features = lib.mkDefault "nix-command flakes";
     nix.extraOptions = lib.mkIf (!useDeterminate) ''

@@ -230,9 +230,14 @@ focus-follows-mouse.enabled = false
 
     # See: https://nikitabobko.github.io/AeroSpace/commands#mode
     alt-shift-semicolon = 'mode service'
+    ctrl-alt-shift-r = 'mode remote'
 
     cmd-h = [] # Disable "hide application"
     cmd-alt-h = [] # Disable "hide others"
+
+# Leave shortcuts to the remote Mac during Screen Sharing; keep only the exit toggle.
+[mode.remote.binding]
+    ctrl-alt-shift-r = 'mode main'
 
 # 'service' binding mode declaration.
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes

@@ -40,11 +40,12 @@ modules/home/            Home-Manager app modules. Each has its own enable.
   shell/{zsh,starship,zellij,shells,git,ssh}.nix
   dev/{claude,codex,opencode,copilot,dev-box}.nix
   platform/{linux,wsl,darwin}.nix
+  platform/config-root.nix  Opt-in protection for the live XDG config root.
   skills/                Claude+Copilot skill installer. Bundles checkpoint.
   cli-tools.nix          Coming soon (currently in private overlay).
 
 modules/darwin/          nix-darwin system modules.
-  {nix-daemon,homebrew,launchd,system-defaults,touch-id-sudo}.nix
+  {nix-daemon,homebrew,launchd,system-defaults,touch-id-sudo,codex}.nix
 
 config/                  Bundled default configs (used by modules above).
   starship.toml          catppuccin_mocha theme.
@@ -115,6 +116,19 @@ let cfg = config.modules.home.shell.starship; in
 **Rule:** every module is inert until its `enable` flag fires. Auto-discovery
 loads every module into every config, so modules MUST guard their `config`
 attribute with `mkIf cfg.enable {…}`.
+
+### Keeping runtime configuration out of source checkouts
+
+Enable `modules.home.platform.config-root.enable` and list checkout paths in
+`forbiddenRoots` to require a real XDG config directory outside those paths.
+Individual app symlinks remain allowed. The module rejects home-file
+declarations that replace the root and checks the live layout before Home
+Manager writes links. `mkDotfilesFlake` also runs this opt-in check during
+Darwin pre-activation, before system changes.
+
+The check is read-only and never repairs or deletes data automatically.
+Run its regression tests with
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests`.
 
 ## Forking
 
@@ -194,6 +208,21 @@ That's the entire fork path. No second clone of nixhome is needed — Nix
 fetches it on demand from GitHub and pins it in your `flake.lock`.
 
 ## Bootstrap on a new machine
+
+**Windows (WSL):** one command from any PowerShell window. It installs the
+WSL distro, clones your overlay inside WSL (auth goes through the Windows Git
+Credential Manager, so a private repo works without SSH keys), runs its
+`./install`, then applies the overlay's `windows/winget.dsc.yaml` if present:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/lupickup/nixhome/main/scripts/bootstrap-windows.ps1))) `
+    -DotfilesRepo https://github.com/<you>/dotfiles.git   # add -DryRun to preview
+```
+
+It can be rerun. On a brand-new PC, the first run stops after `wsl --install`;
+create the Linux user, then run it again.
+
+**macOS / Linux:**
 
 You already have a private overlay flake. You're on a fresh box:
 
