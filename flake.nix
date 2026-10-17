@@ -30,6 +30,17 @@
         #   lib = inputs.nixhome.lib;
         #   lib.mkDotfilesFlake ...
         inherit lib;
+
+        # Tool builds that keep agents from rewriting shared history; see
+        # overlays/agent-guardrails and modules.home.dev.agent-guardrails.
+        overlays.agentGuardrails = import ./overlays/agent-guardrails;
+
+        checks = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-linux" "aarch64-linux" ] (system:
+          import ./overlays/agent-guardrails/checks.nix {
+            inherit nixpkgs home-manager system;
+            overlay = self.overlays.agentGuardrails;
+            module = ./modules/home/dev/agent-guardrails.nix;
+          });
       };
 }
 

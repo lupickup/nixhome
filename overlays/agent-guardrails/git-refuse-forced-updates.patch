@@ -1,0 +1,59 @@
+Subject: [PATCH] push: refuse forced updates
+
+Refuse "--force", "--force-with-lease", "--mirror" and "+<refspec>" in
+"git push" with a clear error, and stop forced updates from overriding
+the non-fast-forward, stale-lease and existing-tag rejections in
+set_ref_status_for_push(). That backstop also covers "+" refspecs from
+remote.<name>.push configuration and "git send-pack --force".
+Fast-forward pushes and branch deletion keep working.
+
+Written against git v2.54.0. Like git, this patch is GPL-2.0-only.
+
+--- a/builtin/push.c
++++ b/builtin/push.c
+@@ -544,6 +544,15 @@
+ 	return git_default_config(k, v, ctx, NULL);
+ }
+ 
++static void refuse_forced_push(int flags)
++{
++	if ((flags & TRANSPORT_PUSH_FORCE) || !is_empty_cas(&cas))
++		die(_("force push (--force, --force-with-lease, --mirror) is disabled in this build of git"));
++	for (int i = 0; i < rs.nr; i++)
++		if (rs.items[i].force)
++			die(_("force push ('+' refspec) is disabled in this build of git"));
++}
++
+ int cmd_push(int argc,
+ 	     const char **argv,
+ 	     const char *prefix,
+@@ -655,6 +664,8 @@
+ 			die(_("--mirror can't be combined with refspecs"));
+ 	}
+ 
++	refuse_forced_push(flags);
++
+ 	if (!is_empty_cas(&cas) && (flags & TRANSPORT_PUSH_FORCE_IF_INCLUDES))
+ 		cas.use_force_if_includes = 1;
+ 
+--- a/remote.c
++++ b/remote.c
+@@ -1733,13 +1733,12 @@
+ 		}
+ 
+ 		/*
+-		 * "--force" will defeat any rejection implemented
+-		 * by the rules above.
++		 * Forced updates are disabled in this build: "--force",
++		 * "+<refspec>", "--force-with-lease" and "--mirror" cannot
++		 * defeat the rejections above.
+ 		 */
+-		if (!force_ref_update)
+-			ref->status = reject_reason;
+-		else if (reject_reason)
+-			ref->forced_update = 1;
++		(void)force_ref_update;
++		ref->status = reject_reason;
+ 	}
+ }
+ 

@@ -38,7 +38,7 @@ modules/base/            Loaded for EVERY config. Declares dotfiles.context.*
 
 modules/home/            Home-Manager app modules. Each has its own enable.
   shell/{zsh,starship,zellij,shells,git,ssh}.nix
-  dev/{claude,codex,opencode,copilot,dev-box}.nix
+  dev/{claude,codex,opencode,copilot,dev-box,agent-guardrails}.nix
   platform/{linux,wsl,darwin}.nix
   platform/config-root.nix  Opt-in protection for the live XDG config root.
   skills/                Claude+Copilot skill installer. Bundles checkpoint,
@@ -59,6 +59,9 @@ scripts/                 Bundled helper scripts.
   install-zellij-plugins.sh           Pinned 3rd-party WASM plugins.
   ssh-vscode-wrapper, ssh-sign-wrapper, resolve-vscode-ssh-sock
                                        Remote dev-box agent forwarding survival.
+
+overlays/                Nixpkgs overlays, also exported as flake outputs.
+  agent-guardrails/      git that refuses forced pushes, its patch and checks.
 
 hosts/                   Reference hosts. Build them with `nix build`.
   example-linux/         Bare Linux home-configuration skeleton.
@@ -141,6 +144,24 @@ the GitHub Copilot app: it exports the chosen threads and starts a Copilot
 session per thread in the matching project, which reads the transcript and
 reports where the work stands. Copilot can't replay Codex history as native
 chat turns, so the transcript is the handoff.
+
+### Keeping agents from rewriting shared history
+
+Enable `modules.home.dev.agent-guardrails.enable` on a standalone Home Manager
+host where agents commit. It applies the `agentGuardrails` overlay, so every
+package that asks for `git` gets a build that refuses `--force`,
+`--force-with-lease`, `--mirror` and `+<refspec>` pushes. A backstop in git's
+ref-update check also stops forced updates from configured `+` refspecs and
+`git send-pack --force`. Fast-forward pushes and branch deletion still work.
+
+Other flakes can apply the overlay directly as `nixhome.overlays.agentGuardrails`;
+on Darwin, add it to the system's `nixpkgs.overlays`. The patched git is built
+locally, while `gitMinimal` stays identical to upstream so compiler toolchains
+still come from the binary cache. `nix flake check` runs a push test against a
+local bare repository and verifies both properties.
+
+This guards against accidents on the client. Protect important branches on the
+server as well.
 
 ## Forking
 
