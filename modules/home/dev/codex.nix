@@ -11,6 +11,16 @@
 # selector and `[profiles.<name>]` tables; use `<name>.config.toml` files
 # with `codex --profile <name>` instead. For policy the app must not relax,
 # use system requirements (see modules/darwin/codex.nix).
+#
+# `exporter.enable` installs `codex-export`, which reads Codex's local thread
+# databases read-only and renders threads as Markdown transcripts. The bundled
+# `codex-import` skill uses it to continue Codex threads in GitHub Copilot:
+#
+#   modules.home.dev.codex = {
+#     enable = true;
+#     exporter.enable = true;
+#   };
+#   modules.home.skills.bundledSkills."codex-import".enable = true;
 
 { config, lib, pkgs, ... }:
 
@@ -61,11 +71,23 @@ in
       '';
       description = "Map of bin name → script path. Deployed to ~/bin/<name>.";
     };
+
+    exporter.enable = lib.mkEnableOption ''
+      codex-export, which lists local Codex threads and renders them as
+      Markdown transcripts (used by the bundled codex-import skill)'';
   };
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
     (lib.mkIf cfg.installPackage {
       home.packages = [ pkgs.codex ];
+    })
+
+    (lib.mkIf cfg.exporter.enable {
+      home.packages = [
+        (pkgs.writeShellScriptBin "codex-export" ''
+          exec ${pkgs.python3}/bin/python3 ${../../../scripts/codex-export} "$@"
+        '')
+      ];
     })
 
     (lib.mkIf (cfg.configFile != null) {

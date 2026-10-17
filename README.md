@@ -41,7 +41,8 @@ modules/home/            Home-Manager app modules. Each has its own enable.
   dev/{claude,codex,opencode,copilot,dev-box}.nix
   platform/{linux,wsl,darwin}.nix
   platform/config-root.nix  Opt-in protection for the live XDG config root.
-  skills/                Claude+Copilot skill installer. Bundles checkpoint.
+  skills/                Claude+Copilot skill installer. Bundles checkpoint,
+                         codex-import, html-effectiveness, visual-explainer.
   cli-tools.nix          Coming soon (currently in private overlay).
 
 modules/darwin/          nix-darwin system modules.
@@ -129,6 +130,17 @@ Darwin pre-activation, before system changes.
 The check is read-only and never repairs or deletes data automatically.
 Run its regression tests with
 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests`.
+
+### Continuing Codex threads in GitHub Copilot
+
+Enable `modules.home.dev.codex.exporter.enable` to install `codex-export`,
+which reads Codex's local thread databases read-only and renders a thread as a
+Markdown transcript (`codex-export list`, `show`, `export`). The bundled
+`codex-import` skill (`bundledSkills."codex-import".enable = true`) uses it in
+the GitHub Copilot app: it exports the chosen threads and starts a Copilot
+session per thread in the matching project, which reads the transcript and
+reports where the work stands. Copilot can't replay Codex history as native
+chat turns, so the transcript is the handoff.
 
 ## Forking
 

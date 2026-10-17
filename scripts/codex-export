@@ -1,0 +1,779 @@
+#!/usr/bin/env python3
+"""List local OpenAI Codex threads and export them as Markdown transcripts.
+
+Codex keeps thread metadata in $CODEX_HOME/state_<N>.sqlite and thread items
+in thread_history_<N>.sqlite; threads without SQLite history fall back to their
+rollout JSONL file. Everything is opened read-only. Transcripts keep user
+prompts and Codex answers verbatim, condense tool activity, and omit reasoning,
+so another agent can pick up the work.
+
+  codex-export list [--limit N] [--days N] [--cwd DIR] [--search TEXT] [--all] [--json]
+  codex-export show THREAD [--json]
+  codex-export export THREAD [-o FILE] [--output-chars N] [--diffs]
+                             [--subagents none|summary|full]
+
+THREAD is a thread id or a unique prefix of one. CODEX_HOME defaults to ~/.codex.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import sqlite3
+import sys
+import time
+
+SKIPPED_ITEMS = {"reasoning", "sleep", "functionCallOutput"}
+SHELL_WRAPPER = re.compile(
+    r"^(?:\S*/)?(?:ba|z)?sh -l?c (?P<quote>['\"])(?P<body>.*)(?P=quote)$", re.S)
+# Ambient UI state the Codex app prepends to prompts; Codex marks it as not
+# part of the user's request.
+AMBIENT_CONTEXT = re.compile(
+    r"\s*<in-app-browser-context\b[^>]*>.*?</in-app-browser-context>\s*", re.S)
+
+
+def die(message):
+    print(f"codex-export: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def latest_db(home, stem):
+    found = []
+    for path in home.glob(f"{stem}_*.sqlite"):
+        match = re.fullmatch(rf"{stem}_(\d+)\.sqlite", path.name)
+        if match:
+            found.append((int(match.group(1)), path))
+    return max(found)[1] if found else None
+
+
+def connect(path):
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def local_time(ms):
+    if not ms:
+        return ""
+    return dt.datetime.fromtimestamp(ms / 1000).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def iso_ms(text):
+    try:
+        return int(dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def tilde(path):
+    home = str(Path.home())
+    if path and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path or ""
+
+
+def inside(path, root):
+    if not path:
+        return False
+    path = os.path.realpath(path)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def one_line(text, limit):
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def clip(text, limit):
+    text = text or ""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    head, tail = limit - limit // 2, limit // 2
+    omitted = len(text) - head - tail
+    return f"{text[:head]}\n… [{omitted} characters omitted] …\n{text[len(text) - tail:]}"
+
+
+def code_span(text):
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    ticks = "`" * (longest + 1)
+    pad = " " if longest else ""
+    return f"{ticks}{pad}{text}{pad}{ticks}"
+
+
+def fence(text, lang=""):
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    ticks = "`" * max(3, longest + 1)
+    return f"{ticks}{lang}\n{text.rstrip()}\n{ticks}"
+
+
+def indent(text, prefix="  "):
+    return "\n".join(prefix + line if line else line for line in text.split("\n"))
+
+
+def quote(text):
+    return "\n".join(f"> {line}" if line else ">" for line in text.strip().split("\n"))
+
+
+def display_command(command):
+    command = (command or "").strip()
+    match = SHELL_WRAPPER.match(command)
+    if not match:
+        return command
+    body = match.group("body")
+    if match.group("quote") == "'":
+        return body.replace("'\"'\"'", "'").replace("'\\''", "'")
+    return re.sub(r"\\([\"\\$`])", r"\1", body)
+
+
+def source_info(source):
+    """Return (label, parent thread id) for a threads.source value."""
+    if source and source.startswith("{"):
+        try:
+            data = json.loads(source)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data:
+            label = next(iter(data))
+            parent = None
+            spawn = data.get("subagent")
+            if isinstance(spawn, dict):
+                parent = (spawn.get("thread_spawn") or {}).get("parent_thread_id")
+            return label, parent
+    return source or "", None
+
+
+def describe(row, edge_parent):
+    data = dict(row)
+    label, source_parent = source_info(data.get("source"))
+    title = ""
+    for key in ("name", "title", "preview", "first_user_message"):
+        title = " ".join((data.get(key) or "").split())
+        if title:
+            break
+    agent = data.get("agent_nickname") or data.get("agent_role") or ""
+    agent_path = data.get("agent_path") or ""
+    return {
+        "id": data["id"],
+        "title": title or " ".join(part for part in (agent, agent_path) if part) or "(untitled)",
+        "prompt": (data.get("first_user_message") or data.get("title") or "").strip(),
+        "cwd": data.get("cwd") or "",
+        "source": label,
+        "subagent": label == "subagent" or data.get("thread_source") == "subagent",
+        "parent_id": edge_parent or source_parent,
+        "agent": agent,
+        "agent_path": agent_path,
+        "archived": bool(data.get("archived")),
+        "created_ms": data.get("created_at_ms") or (data.get("created_at") or 0) * 1000,
+        "updated_ms": data.get("updated_at_ms") or (data.get("updated_at") or 0) * 1000,
+        "model": data.get("model") or "",
+        "reasoning_effort": data.get("reasoning_effort") or "",
+        "git_branch": data.get("git_branch") or "",
+        "git_sha": data.get("git_sha") or "",
+        "git_origin_url": data.get("git_origin_url") or "",
+        "rollout_path": data.get("rollout_path") or "",
+        "children": [],
+    }
+
+
+def camel(key):
+    head, *rest = key.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def normalize_item(item):
+    """Map a rollout item_completed payload onto the thread-history item shape."""
+    out = {camel(key): value for key, value in item.items()}
+    kind = str(out.get("type") or "")
+    kind = kind[:1].lower() + kind[1:]
+    if kind == "extension" and out.get("kind") == "web_search":
+        kind = "webSearch"
+    out["type"] = kind
+    if kind == "agentMessage" and "text" not in out:
+        out["text"] = "".join(part.get("text") or "" for part in out.get("content") or []
+                              if isinstance(part, dict))
+    if kind == "commandExecution" and isinstance(out.get("command"), list):
+        out["command"] = shlex.join(str(arg) for arg in out["command"])
+    if kind == "fileChange" and isinstance(out.get("changes"), dict):
+        out["changes"] = [
+            {"path": path,
+             "kind": {"type": change.get("type"), "move_path": change.get("move_path")},
+             "diff": change.get("unified_diff") or change.get("content") or ""}
+            for path, change in out["changes"].items() if isinstance(change, dict)]
+    return out
+
+
+def read_rollout(path):
+    """Return (turn_id, created_ms, item) tuples from a rollout JSONL file."""
+    items, legacy = [], []
+    turn, prompts = "turn-0", 0
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            kind, ptype = record.get("type"), payload.get("type")
+            stamp = iso_ms(record.get("timestamp"))
+            if kind == "event_msg" and ptype == "item_completed":
+                if isinstance(payload.get("item"), dict):
+                    items.append((payload.get("turn_id") or turn, stamp,
+                                  normalize_item(payload["item"])))
+            elif kind == "event_msg" and ptype == "user_message":
+                prompts += 1
+                turn = f"turn-{prompts}"
+                legacy.append((turn, stamp, {"type": "userMessage", "content": [
+                    {"type": "text", "text": payload.get("message") or ""}]}))
+            elif kind == "event_msg" and ptype == "agent_message":
+                legacy.append((turn, stamp, {"type": "agentMessage",
+                                             "text": payload.get("message") or ""}))
+            elif kind == "response_item" and ptype in (
+                    "function_call", "custom_tool_call", "local_shell_call"):
+                arguments = payload.get("arguments") or payload.get("input") or payload.get("action")
+                legacy.append((turn, stamp, {"type": "toolCall",
+                                             "tool": payload.get("name") or ptype,
+                                             "arguments": arguments}))
+            elif kind == "compacted":
+                legacy.append((turn, stamp, {"type": "contextCompaction",
+                                             "summary": payload.get("message") or ""}))
+    return items or legacy
+
+
+class Store:
+    def __init__(self, home):
+        self.home = home
+        state = latest_db(home, "state")
+        if state is None:
+            die(f"no Codex state database (state_*.sqlite) in {home}")
+        self.db = connect(state)
+        history = latest_db(home, "thread_history")
+        self.history = connect(history) if history else None
+        self.type_expr = "json_extract(item_json, '$.type')"
+        if self.history is not None:
+            columns = {row[1] for row in self.history.execute("pragma table_info(thread_items)")}
+            if "item_type" in columns:
+                self.type_expr = f"coalesce(nullif(item_type, ''), {self.type_expr})"
+        self._threads = None
+
+    def threads(self):
+        if self._threads is None:
+            tables = {row[0] for row in self.db.execute(
+                "select name from sqlite_master where type = 'table'")}
+            parents = {}
+            if "thread_spawn_edges" in tables:
+                for parent, child in self.db.execute(
+                        "select parent_thread_id, child_thread_id from thread_spawn_edges"):
+                    parents[child] = parent
+            threads = {}
+            for row in self.db.execute("select * from threads"):
+                info = describe(row, parents.get(row["id"]))
+                threads[info["id"]] = info
+            for info in sorted(threads.values(), key=lambda t: t["created_ms"]):
+                parent = threads.get(info["parent_id"] or "")
+                if parent is not None and parent is not info:
+                    parent["children"].append(info["id"])
+            self._threads = threads
+        return self._threads
+
+    def resolve(self, ref):
+        ref = (ref or "").strip()
+        threads = self.threads()
+        if ref in threads:
+            return threads[ref]
+        matches = [t for tid, t in threads.items() if tid.startswith(ref)] if len(ref) >= 4 else []
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            die(f"no Codex thread matches {ref!r}")
+        die(f"{ref!r} matches {len(matches)} threads; use more of the id")
+
+    def history_counts(self, ids):
+        """Return {thread_id: (turns, user messages)} for threads with SQLite history."""
+        counts, ids = {}, list(ids)
+        if self.history is None:
+            return counts
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = self.history.execute(
+                f"select thread_id, count(distinct turn_id), "
+                f"sum({self.type_expr} = 'userMessage') from thread_items "
+                f"where thread_id in ({marks}) group by thread_id", chunk)
+            for thread_id, turns, prompts in rows:
+                counts[thread_id] = (turns, prompts or 0)
+        return counts
+
+    def rollout_path(self, info):
+        if not info["rollout_path"]:
+            return None
+        path = Path(info["rollout_path"]).expanduser()
+        if not path.is_absolute():
+            path = self.home / path
+        return path if path.is_file() else None
+
+    def items(self, info, prefer="auto"):
+        """Return ([(turn_id, created_ms, item)], origin) for a thread."""
+        if prefer in ("auto", "sqlite") and self.history is not None:
+            rows = self.history.execute(
+                "select turn_id, created_at_ms, item_json from thread_items "
+                "where thread_id = ? order by rollout_ordinal", (info["id"],)).fetchall()
+            items = []
+            for turn_id, created_ms, raw in rows:
+                try:
+                    item = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(item, dict):
+                    items.append((turn_id, created_ms, item))
+            if items:
+                return items, "sqlite"
+        if prefer in ("auto", "rollout"):
+            path = self.rollout_path(info)
+            items = read_rollout(path) if path else []
+            if items:
+                return items, "rollout"
+        return [], "none"
+
+
+def summarize(store, info, counts):
+    turns, prompts = counts.get(info["id"], (None, None))
+    if info["id"] in counts:
+        history = "sqlite"
+    else:
+        history = "rollout" if store.rollout_path(info) else "none"
+    return {
+        "id": info["id"],
+        "title": info["title"],
+        "cwd": info["cwd"],
+        "updated": local_time(info["updated_ms"]),
+        "turns": turns,
+        "user_messages": prompts,
+        "history": history,
+        "source": info["source"],
+        "subagent": info["subagent"],
+        "archived": info["archived"],
+        "parent_id": info["parent_id"],
+        "children": len(info["children"]),
+    }
+
+
+def first_user_text(items):
+    for _, _, item in items:
+        if item.get("type") == "userMessage":
+            return user_text(item)
+    return ""
+
+
+def final_answer(items):
+    answers = [item for _, _, item in items
+               if item.get("type") == "agentMessage" and (item.get("text") or "").strip()]
+    finals = [item for item in answers if item.get("phase") != "commentary"]
+    chosen = (finals or answers)[-1:] if answers else []
+    return chosen[0]["text"].strip() if chosen else ""
+
+
+def user_text(item):
+    parts = []
+    for part in item.get("content") or []:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "text":
+            parts.append(AMBIENT_CONTEXT.sub("\n\n", part.get("text") or "").strip())
+        elif kind in ("localImage", "local_image"):
+            parts.append(f"[image: {part.get('path') or ''}]")
+        elif kind == "image":
+            parts.append("[image]")
+        elif part.get("name") or part.get("path"):
+            parts.append(f"[{kind}: {part.get('name') or part.get('path')}]")
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def prompt_preview(text):
+    if "## My request:" in text:
+        text = text.split("## My request:", 1)[1].strip() or "(attachments only)"
+    return one_line(text, 90) if text else "(no user message)"
+
+
+def change_kind(change):
+    kind = change.get("kind")
+    return (kind.get("type"), kind.get("move_path")) if isinstance(kind, dict) else (kind, None)
+
+
+def diffstat(change):
+    kind, _ = change_kind(change)
+    lines = (change.get("diff") or "").splitlines()
+    if kind == "add":
+        return len(lines), 0
+    if kind == "delete":
+        return 0, len(lines)
+    added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    return added, removed
+
+
+class Renderer:
+    def __init__(self, store, output_chars=400, diffs=False, subagents="summary", prefer="auto"):
+        self.store = store
+        self.output_chars = output_chars
+        self.diffs = diffs
+        self.subagents = subagents
+        self.prefer = prefer
+        self.cwd = ""
+
+    def path(self, path):
+        if self.cwd and path and inside(path, os.path.realpath(self.cwd)):
+            return os.path.relpath(os.path.realpath(path), os.path.realpath(self.cwd))
+        return tilde(path)
+
+    def output(self, text):
+        text = clip((text or "").strip(), self.output_chars).strip()
+        return "\n" + indent(fence(text, "text")) if text else ""
+
+    def subagent_label(self, thread_id):
+        child = self.store.threads().get(thread_id or "")
+        if child is None:
+            return code_span(thread_id or "subagent")
+        name = child["agent"] or one_line(child["title"], 60)
+        if child["agent_path"] and child["agent_path"] != name:
+            name += f" {code_span(child['agent_path'])}"
+        return f"{name} ({code_span(child['id'])})"
+
+    def block(self, item):
+        """Render one item as (kind, markdown); kind is 'para' or 'bullet'."""
+        kind = item.get("type")
+        if not kind or kind in SKIPPED_ITEMS:
+            return None
+        if kind == "userMessage":
+            text = user_text(item)
+            return ("para", f"**User:**\n\n{text}") if text else None
+        if kind == "agentMessage":
+            text = (item.get("text") or "").strip()
+            if not text:
+                return None
+            if item.get("phase") == "commentary":
+                return "para", quote(text)
+            return "para", f"**Codex:**\n\n{text}"
+        if kind == "plan":
+            text = (item.get("text") or "").strip()
+            return ("para", f"**Plan:**\n\n{text}") if text else None
+        if kind == "commandExecution":
+            command = display_command(item.get("command"))
+            status = item.get("exitCode")
+            status = f"exit {status}" if status is not None else (item.get("status") or "")
+            suffix = f" ({status})" if status else ""
+            if "\n" in command or len(command) > 160:
+                text = f"- Ran{suffix}:\n" + indent(fence(clip(command, 600), "sh"))
+            else:
+                text = f"- Ran {code_span(command)}{suffix}"
+            return "bullet", text + self.output(item.get("aggregatedOutput"))
+        if kind == "fileChange":
+            lines = []
+            for change in item.get("changes") or []:
+                ckind, move = change_kind(change)
+                verb = {"add": "Added", "delete": "Deleted"}.get(ckind, "Edited")
+                target = code_span(self.path(change.get("path") or ""))
+                if move:
+                    verb, target = "Moved", f"{target} → {code_span(self.path(move))}"
+                added, removed = diffstat(change)
+                line = f"- {verb} {target} (+{added} −{removed})"
+                if self.diffs and change.get("diff"):
+                    line += "\n" + indent(fence(change["diff"], "diff"))
+                lines.append(line)
+            return ("bullet", "\n".join(lines)) if lines else None
+        if kind == "mcpToolCall":
+            name = ".".join(part for part in (item.get("server"), item.get("tool")) if part)
+            args = item.get("arguments")
+            text = f"- MCP {code_span(name or 'tool')}"
+            if args:
+                text += " " + code_span(one_line(json.dumps(args, ensure_ascii=False), 200))
+            error = item.get("error")
+            if error:
+                message = error.get("message") if isinstance(error, dict) else error
+                return "bullet", f"{text} (error: {one_line(str(message), 200)})"
+            result = item.get("result") or {}
+            content = result.get("content") if isinstance(result, dict) else None
+            texts = [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+            return "bullet", text + self.output("\n".join(texts))
+        if kind == "webSearch":
+            action = item.get("action") or {}
+            query = item.get("query") or "; ".join(
+                q for q in (action.get("queries") or [action.get("query")]) if q) or action.get("url")
+            return "bullet", f"- Web search: {code_span(one_line(query, 200))}" if query else "- Web search"
+        if kind == "imageView":
+            return "bullet", f"- Viewed image {code_span(self.path(item.get('path') or ''))}"
+        if kind == "dynamicToolCall":
+            name = ".".join(part for part in (item.get("namespace"), item.get("tool")) if part)
+            status = item.get("status")
+            return "bullet", f"- Tool {code_span(name or 'tool')}" + (f" ({status})" if status else "")
+        if kind == "collabAgentToolCall":
+            if item.get("tool") == "wait":
+                return "bullet", "- Waited for subagents"
+            targets = ", ".join(self.subagent_label(t) for t in item.get("receiverThreadIds") or [])
+            text = f"- Agent tool {code_span(item.get('tool') or 'unknown')}"
+            text += f" → {targets}" if targets else ""
+            prompt = item.get("prompt")
+            return "bullet", text + (f": {one_line(prompt, 300)}" if prompt else "")
+        if kind == "subAgentActivity":
+            activity = item.get("kind")
+            verbs = {"started": "Started", "completed": "Finished", "interrupted": "Interrupted"}
+            if activity not in verbs:
+                return None
+            return "bullet", f"- {verbs[activity]} subagent {self.subagent_label(item.get('agentThreadId'))}"
+        if kind == "contextCompaction":
+            summary = (item.get("summary") or "").strip()
+            text = "- _Context compacted_"
+            return "bullet", text + ("\n\n" + indent(quote(summary)) if summary else "")
+        if kind == "toolCall":
+            args = item.get("arguments")
+            if not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False) if args else ""
+            text = f"- Tool {code_span(str(item.get('tool') or 'tool'))}"
+            return "bullet", text + (f" {code_span(one_line(args, 200))}" if args else "")
+        return "bullet", f"- {kind}"
+
+    def turn_text(self, number, entries, level):
+        stamps = [ms for ms, _ in entries if ms]
+        heading = "#" * min(level, 6) + f" Turn {number}"
+        if stamps:
+            heading += f" · {local_time(min(stamps))}"
+        out, previous = [heading], None
+        for _, item in entries:
+            block = self.block(item)
+            if not block:
+                continue
+            kind, text = block
+            out.append(("\n" if kind == previous == "bullet" else "\n\n") + text)
+            previous = kind
+        return "".join(out)
+
+    def turns(self, items):
+        groups = []
+        for turn_id, ms, item in items:
+            if not groups or groups[-1][0] != turn_id:
+                groups.append((turn_id, []))
+            groups[-1][1].append((ms, item))
+        return [entries for _, entries in groups]
+
+    def subagent_section(self, info, level, seen):
+        threads = self.store.threads()
+        children = [threads[c] for c in info["children"] if c in threads and c not in seen]
+        if self.subagents == "none" or not children:
+            return []
+        parts = ["#" * min(level, 6) + " Subagents"]
+        for child in children:
+            seen.add(child["id"])
+            items, origin = self.store.items(child, self.prefer)
+            label = child["agent"] or one_line(child["title"], 80)
+            if child["agent_path"] and child["agent_path"] != label:
+                label += f" ({child['agent_path']})"
+            head = "#" * min(level + 1, 6) + f" Subagent: {label}"
+            meta = (f"Thread {code_span(child['id'])} · last active {local_time(child['updated_ms'])}"
+                    f" · history: {origin}")
+            if self.subagents == "full" and items:
+                body = [self.turn_text(n, entries, level + 2)
+                        for n, entries in enumerate(self.turns(items), 1)]
+                parts.append("\n\n".join([head, meta] + body))
+            else:
+                task = first_user_text(items) or child["prompt"]
+                if not task:
+                    task = ("(not recorded; Codex stores this task encrypted)"
+                            if child["agent_path"] else "(no task recorded)")
+                task = clip(task, 1500).strip()
+                result = clip(final_answer(items), 4000).strip() or "(no final answer recorded)"
+                parts.append("\n\n".join([head, meta, "**Task:**", task, "**Result:**", result]))
+            parts.extend(self.subagent_section(child, level + 2, seen))
+        return parts
+
+    def header(self, info, origin, turn_count):
+        git = " @ ".join(part for part in (
+            code_span(info["git_branch"]) if info["git_branch"] else "",
+            code_span(info["git_sha"][:12]) if info["git_sha"] else "") if part)
+        if git and info["git_origin_url"]:
+            git += f" ({info['git_origin_url']})"
+        rows = [
+            ("Codex thread", code_span(info["id"])),
+            ("Directory", code_span(info["cwd"]) if info["cwd"] else ""),
+            ("Git", git),
+            ("Model", " · ".join(part for part in (info["model"], info["reasoning_effort"]) if part)),
+            ("Started", local_time(info["created_ms"])),
+            ("Last active", local_time(info["updated_ms"])),
+            ("Turns", str(turn_count)),
+            ("History source", origin),
+        ]
+        if self.output_chars > 0:
+            detail = f"output clipped to {self.output_chars} characters"
+        else:
+            detail = "output omitted"
+        note = ("User prompts (minus Codex app ambient context) and Codex answers are verbatim. "
+                "Quoted (`>`) paragraphs are Codex progress notes. Tool activity is condensed "
+                f"({detail}); reasoning is omitted.")
+        lines = [f"# {info['title']}", "",
+                 f"Exported from OpenAI Codex by codex-export on {local_time(time.time() * 1000)}.",
+                 note, ""]
+        lines += [f"- {key}: {value}" for key, value in rows if value]
+        return "\n".join(lines)
+
+    def document(self, info):
+        """Return (markdown, turn count, history origin) for a thread."""
+        self.cwd = info["cwd"]
+        items, origin = self.store.items(info, self.prefer)
+        turns = self.turns(items)
+        texts = [self.turn_text(n, entries, 2) for n, entries in enumerate(turns, 1)]
+        header = self.header(info, origin, len(turns))
+        index_lines = 4 + len(turns)
+        line = header.count("\n") + 1 + 1 + index_lines + 1 + 1
+        rows = []
+        for number, (entries, text) in enumerate(zip(turns, texts), 1):
+            stamps = [ms for ms, _ in entries if ms]
+            prompt = next((user_text(item) for _, item in entries
+                           if item.get("type") == "userMessage"), "")
+            prompt = prompt_preview(prompt).replace("|", "\\|")
+            rows.append(f"| {number} | {line} | {local_time(min(stamps)) if stamps else ''} | {prompt} |")
+            line += text.count("\n") + 1 + 1
+        index = "\n".join(["## Turn index", "",
+                           "| Turn | Line | Started | First user message |",
+                           "|---:|---:|---|---|"] + rows)
+        parts = [header, index] + texts + self.subagent_section(info, 2, {info["id"]})
+        return "\n\n".join(parts) + "\n", len(turns), origin
+
+
+def print_table(rows):
+    if not rows:
+        print("no matching Codex threads", file=sys.stderr)
+        return
+    dirs = [tilde(row["cwd"]) for row in rows]
+    width = min(max(len(d) for d in dirs), 40)
+    print(f"{'UPDATED':<16}  {'TURNS':>5}  {'ID':<36}  {'DIRECTORY':<{width}}  TITLE")
+    for row, directory in zip(rows, dirs):
+        if len(directory) > width:
+            directory = "…" + directory[-(width - 1):]
+        turns = "-" if row["turns"] is None else str(row["turns"])
+        print(f"{row['updated']:<16}  {turns:>5}  {row['id']:<36}  {directory:<{width}}  "
+              f"{one_line(row['title'], 70)}")
+
+
+def cmd_list(store, args):
+    threads = list(store.threads().values())
+    if not args.all:
+        threads = [t for t in threads if not t["subagent"] and not t["archived"]]
+    if args.cwd:
+        root = os.path.realpath(os.path.expanduser(args.cwd))
+        threads = [t for t in threads if inside(t["cwd"], root)]
+    if args.days is not None:
+        cutoff = (time.time() - args.days * 86400) * 1000
+        threads = [t for t in threads if t["updated_ms"] >= cutoff]
+    if args.search:
+        needle = args.search.casefold()
+        threads = [t for t in threads if needle in f"{t['title']}\n{t['cwd']}".casefold()]
+    threads.sort(key=lambda t: t["updated_ms"], reverse=True)
+    if args.limit > 0:
+        threads = threads[:args.limit]
+    counts = store.history_counts(t["id"] for t in threads)
+    rows = [summarize(store, t, counts) for t in threads]
+    if args.json:
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+    else:
+        print_table(rows)
+
+
+def cmd_show(store, args):
+    info = store.resolve(args.thread)
+    threads = store.threads()
+    counts = store.history_counts([info["id"]] + info["children"])
+    data = summarize(store, info, counts)
+    data.update({
+        "created": local_time(info["created_ms"]),
+        "model": info["model"],
+        "reasoning_effort": info["reasoning_effort"],
+        "git_branch": info["git_branch"],
+        "git_sha": info["git_sha"],
+        "git_origin_url": info["git_origin_url"],
+        "rollout_path": info["rollout_path"],
+        "children": [summarize(store, threads[c], counts) for c in info["children"]],
+    })
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    for key, value in data.items():
+        if key == "children":
+            for child in value:
+                print(f"child: {child['id']}  {one_line(child['title'], 70)}")
+        elif value not in (None, ""):
+            print(f"{key}: {value}")
+
+
+def cmd_export(store, args):
+    info = store.resolve(args.thread)
+    renderer = Renderer(store, args.output_chars, args.diffs, args.subagents, args.history)
+    text, turns, origin = renderer.document(info)
+    if origin == "none":
+        die(f"thread {info['id']} has no readable history")
+    if not args.output:
+        sys.stdout.write(text)
+        return
+    path = Path(args.output).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    print(f"wrote {path} ({turns} turns, {len(text):,} characters)", file=sys.stderr)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="codex-export",
+        description="List local OpenAI Codex threads and export them as Markdown transcripts.")
+    parser.add_argument("--codex-home", help="Codex home (default: $CODEX_HOME or ~/.codex)")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    listing = commands.add_parser("list", help="list threads, most recently active first")
+    listing.add_argument("-n", "--limit", type=int, default=20, help="maximum rows (0 for all)")
+    listing.add_argument("--days", type=float, help="only threads active in the last N days")
+    listing.add_argument("--cwd", help="only threads whose directory is inside DIR")
+    listing.add_argument("-s", "--search", help="case-insensitive match on title or directory")
+    listing.add_argument("-a", "--all", action="store_true",
+                         help="include subagent and archived threads")
+    listing.add_argument("--json", action="store_true", help="print JSON")
+
+    show = commands.add_parser("show", help="show one thread's metadata")
+    show.add_argument("thread", help="thread id or unique prefix")
+    show.add_argument("--json", action="store_true", help="print JSON")
+
+    export = commands.add_parser("export", help="render one thread as Markdown")
+    export.add_argument("thread", help="thread id or unique prefix")
+    export.add_argument("-o", "--output", help="write to FILE (mode 0600) instead of stdout")
+    export.add_argument("--output-chars", type=int, default=400,
+                        help="clip each tool output to N characters (0 omits output)")
+    export.add_argument("--diffs", action="store_true", help="include file diffs")
+    export.add_argument("--subagents", choices=("none", "summary", "full"), default="summary",
+                        help="how to include spawned subagent threads")
+    export.add_argument("--history", choices=("auto", "sqlite", "rollout"), default="auto",
+                        help=argparse.SUPPRESS)
+
+    args = parser.parse_args(argv)
+    home = Path(args.codex_home or os.environ.get("CODEX_HOME") or "~/.codex").expanduser()
+    if not home.is_dir():
+        die(f"Codex home {home} does not exist")
+    try:
+        store = Store(home)
+        {"list": cmd_list, "show": cmd_show, "export": cmd_export}[args.command](store, args)
+    except sqlite3.Error as error:
+        die(f"cannot read Codex databases in {home}: {error}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(1)
