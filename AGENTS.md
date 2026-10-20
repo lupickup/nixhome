@@ -19,11 +19,14 @@ implementation.
 
 ## Hard rules
 
-- **OSS-clean.** No corporate emails (`*@microsoft.com`, etc.), no
-  Microsoft hostnames (`lpickup-mn1998`, `work-dev-enc-01`, `*DevBox*`),
-  no `linkedin`, no `/mnt/c/...` absolute paths assuming a particular
-  Windows setup, no `DEVBOX_*` references outside the dev-box module's
-  abstract option name.
+- **OSS-clean.** No employer or organisation names, corporate emails, work
+  hostnames, tenant or org identifiers, and no `/mnt/c/...` absolute paths
+  assuming a particular Windows setup. Mechanism here takes such values as
+  options or derives them from data (an identity's key from its
+  `github.com-<name>` alias, for example); the private overlays that own the
+  values hold them, along with the denylists they use to scan this
+  repository. No `DEVBOX_*` references outside the dev-box module's abstract
+  option name.
 - **No agent session references** in comments. No "(per GPT-5 critique)",
   "(via Claude session XYZ)", or similar. Comments must be timeless and
   useful to anyone reading the code cold.

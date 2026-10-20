@@ -78,15 +78,33 @@ typed, semantic option set declared in `modules/base/`:
 |---|---|---|
 | `platform` | `darwin` \| `linux` \| `wsl` | Auto-detects darwin/linux; WSL opts in. |
 | `location` | `local` \| `remote` | `remote` = accessed primarily via SSH. |
-| `identity` | `personal` \| `microsoft` \| `linkedin` | Activates matching profile. |
+| `identity` | a label, e.g. `personal` | Selects the identity profile that sets top-level git user and signing. |
 | `capability` | `minimal-shell` \| `dev` \| `desktop` | Coarse package set. |
 | `managedHost` | bool | When true, ssh/PAM/etc. modules go inert. |
 | `aiProfile` | `anthropic` \| `copilot` | Routes Codex / OpenCode. |
 | `credentialBackend` | `none` \| `linux-gcm` \| `windows-gcm-wsl` \| `macos-gcm` | Drives git credential.helper. |
 | `clipboardBackend` | `wl-clipboard` \| `pbcopy` \| `clip-exe-wsl` \| `xclip` \| `none` | zellij copy_command, etc. |
 
-The `identity` enum lists the three slots upstream uses; you can swap them
-for your own labels in your private overlay by overriding the option type.
+Identity profiles are data in the overlay that owns them. `lib.mkIdentityProfile`
+turns an email, key name and optional public key into a Home Manager module that
+always writes `~/<name>.gitconfig` (for per-gitdir includes) and, on hosts whose
+`identity` matches, sets the top-level git user and signing key:
+
+```nix
+extraHomeModules = [
+  (nixhomeLib.mkIdentityProfile {
+    name = "work";
+    fullName = "Ada Lovelace";
+    email = "ada@example.com";
+    keyName = "work";                    # ~/.ssh/work, or ~/.ssh/work.pub with an agent
+    description = "# Work repos (~/repos/work/)";
+  })
+];
+```
+
+On remote dev boxes, `ssh-vscode-wrapper` maps a `github.com-<name>` host alias
+to `~/.ssh/<name>.pub`, so each identity's key is offered through a forwarded
+agent.
 
 ## Module pattern
 
@@ -331,7 +349,7 @@ lib.mkDotfilesFlake inputs {
 - **NixOS.** None of my own machines are NixOS, so no NixOS path yet.
 - **flake-parts / snowfall.** Hand-rolled; small enough to keep direct.
 - **Bundle your secrets.** Bring your own `agenix`/`sops-nix`/1Password hook.
-- **OS-level provisioning** (Microsoft DevBox image, Ansible roles, MDM
+- **OS-level provisioning** (managed dev VM images, Ansible roles, MDM
   policies). The `dev-box` module is user-space only — wrappers, agents,
   conventions. Corporate-managed images own the rest.
 

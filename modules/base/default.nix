@@ -56,12 +56,13 @@ in
       };
 
       identity = mkOption {
-        type = types.enum [ "personal" "microsoft" "linkedin" ];
+        type = types.strMatching "[a-z][a-z0-9-]*";
         default = "personal";
         description = ''
-          Which identity profile this host uses for git/SSH signing,
-          per-org URL rewrites, and identity-specific tooling. The matching
-          modules.home.identity.<name> module reads this value and activates.
+          Label of the identity profile this host uses for top-level git
+          user, email and signing. Identity profiles (see
+          `lib.mkIdentityProfile`) are declared by the private overlays that
+          own them; the profile whose name matches this label activates.
         '';
       };
 

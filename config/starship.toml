@@ -62,7 +62,7 @@ disabled = true
 format = 'on [$symbol($subscription)]($style) '
 symbol = '󰠅 '
 style = 'blue bold'
-# when = "pwd | grep -Eq '/(MSFT)'"
+# when = "pwd | grep -Eq '/(work)'"
 
 [custom.arch]
 command = 'arch'

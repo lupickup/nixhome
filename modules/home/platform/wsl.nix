@@ -17,7 +17,7 @@ in
 
   config = lib.mkIf (cfg.enable && ctx.platform == "wsl") {
     # `wslu` was removed from nixpkgs in mid-2025 (project archived). Install
-    # the Microsoft-provided wslu via apt on the Windows side if needed.
+    # the distribution's wslu package via apt if needed.
     home.packages = [ ];
   };
 }

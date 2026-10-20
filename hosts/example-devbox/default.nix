@@ -4,7 +4,7 @@
 #   nix build .#homeConfigurations.example-devbox.activationPackage
 #
 # This shows the pattern most people on a corporate-provisioned remote
-# dev VM (Microsoft DevBox / Cloud Workstation / personal cloud VM)
+# dev VM (managed cloud dev box / cloud workstation / personal cloud VM)
 # actually want:
 #
 #   - Bundled starship/zellij/copilot defaults (zero-config baseline).
@@ -15,7 +15,7 @@
 #
 # What this host does NOT do:
 #
-#   - Install corporate software (Intune / Ansible / image baseline owns that).
+#   - Install corporate software (device management or the image baseline owns that).
 #   - Set an identity profile email / signing key (forkers wire their own).
 #   - Touch /etc/ssh/ssh_config or PAM (use managedHost = true if the box
 #     is corporate-provisioned and you want HM to keep its hands off).
