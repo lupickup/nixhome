@@ -13,50 +13,44 @@ SSH_BIN="$(command -v ssh)"
 
 required_key_file=""
 
+# A `github.com-<name>` host alias selects ~/.ssh/<name>.pub, so an identity's
+# key is offered even when the forwarded agent holds several keys.
+alias_key_file() {
+  case "$1" in
+    github.com-?*) printf '%s\n' "$HOME/.ssh/${1#github.com-}.pub" ;;
+    *) return 1 ;;
+  esac
+}
+
 detect_required_key_file() {
-  local prev="" arg host=""
+  local prev="" arg host
   for arg in "$@"; do
     if [ "$prev" = "-i" ] || [ "$prev" = "IdentityFile" ]; then
       printf '%s\n' "$arg"
       return 0
     fi
 
+    host=""
     case "$arg" in
-      github.com-msft|git@github.com-msft:*|ssh://git@github.com-msft/*)
-        printf '%s\n' "$HOME/.ssh/msft.pub"
-        return 0
+      -*) ;;
+      ssh://*)
+        host="${arg#ssh://}"
+        host="${host#*@}"
+        host="${host%%[:/]*}"
         ;;
-      github.com-linkedin|git@github.com-linkedin:*|ssh://git@github.com-linkedin/*)
-        printf '%s\n' "$HOME/.ssh/linkedin.pub"
-        return 0
+      *@*)
+        host="${arg#*@}"
+        host="${host%%:*}"
         ;;
-      github.com-personal|git@github.com-personal:*|ssh://git@github.com-personal/*)
-        printf '%s\n' "$HOME/.ssh/personal.pub"
-        return 0
-        ;;
+      *) host="$arg" ;;
     esac
-
-    if [[ "$arg" != -* && "$arg" == *@* ]]; then
-      host="${arg#*@}"
-      host="${host%%:*}"
-      case "$host" in
-        github.com-msft)
-          printf '%s\n' "$HOME/.ssh/msft.pub"
-          return 0
-          ;;
-        github.com-linkedin)
-          printf '%s\n' "$HOME/.ssh/linkedin.pub"
-          return 0
-          ;;
-        github.com-personal)
-          printf '%s\n' "$HOME/.ssh/personal.pub"
-          return 0
-          ;;
-      esac
+    if [ -n "$host" ] && alias_key_file "$host"; then
+      return 0
     fi
 
     prev="$arg"
   done
+  return 1
 }
 
 required_key_file="$(detect_required_key_file "$@" || true)"
@@ -70,7 +64,7 @@ live_sock="$($RESOLVER "${resolver_args[@]}" 2>/dev/null || true)"
 if [ -z "$live_sock" ]; then
   if [ -n "$required_key_file" ]; then
     echo "ERROR: No forwarded or local SSH agent has $(basename "$required_key_file")." >&2
-    echo "Hint: reconnect with agent forwarding, or load the fallback key with: devbox-ssh-add-msft" >&2
+    echo "Hint: reconnect with agent forwarding, or load the fallback key with: dev-box-ssh-add ${required_key_file%.pub}" >&2
   else
     echo "ERROR: No live SSH agent socket with identities found" >&2
   fi

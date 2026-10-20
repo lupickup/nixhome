@@ -6,7 +6,7 @@
 # Usage:
 #   eval "$(resolve-vscode-ssh-sock)"                        # export SSH_AUTH_SOCK
 #   resolve-vscode-ssh-sock --path                           # print socket path
-#   resolve-vscode-ssh-sock --path --key-file ~/.ssh/msft.pub
+#   resolve-vscode-ssh-sock --path --key-file ~/.ssh/work.pub
 #   resolve-vscode-ssh-sock --path --local-sock ~/.ssh/agent.sock
 #   resolve-vscode-ssh-sock --path --timeout 3
 #

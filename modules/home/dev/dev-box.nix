@@ -31,9 +31,12 @@
 #     signing.program = "${config.home.homeDirectory}/.local/bin/ssh-sign-wrapper";
 #   };
 #
-# Note: this module is about USER-SPACE conveniences. OS-level Microsoft
-# DevBox / Intune provisioning (image baseline, mdm policies, corporate
-# software) is handled by the image build / Ansible — not nix.
+# Note: this module is about USER-SPACE conveniences. OS-level provisioning
+# of managed dev VMs (image baseline, MDM policies, corporate software) is
+# handled by the image build / Ansible — not nix.
+#
+# `dev-box-ssh-add <private-key>` loads a VM-local key into the stable agent
+# for sessions that outlive the workstation's forwarded agent.
 
 { config, lib, pkgs, ... }:
 
@@ -45,6 +48,7 @@ let
     "ssh-vscode-wrapper"      = ../../../scripts/ssh-vscode-wrapper;
     "ssh-sign-wrapper"        = ../../../scripts/ssh-sign-wrapper;
     "resolve-vscode-ssh-sock" = ../../../scripts/resolve-vscode-ssh-sock;
+    "dev-box-ssh-add"         = ../../../scripts/dev-box-ssh-add;
   };
 in
 {
@@ -65,9 +69,10 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Install ssh-vscode-wrapper, ssh-sign-wrapper, and
-        resolve-vscode-ssh-sock into ~/.local/bin. These resolve a live
-        forwarded or VM-local SSH agent socket at command time.
+        Install ssh-vscode-wrapper, ssh-sign-wrapper,
+        resolve-vscode-ssh-sock and dev-box-ssh-add into ~/.local/bin. The
+        wrappers resolve a live forwarded or VM-local SSH agent socket at
+        command time; dev-box-ssh-add loads a fallback key into the local one.
       '';
     };
 

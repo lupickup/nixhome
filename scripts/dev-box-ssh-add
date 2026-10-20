@@ -1,0 +1,45 @@
+#!/bin/bash
+# dev-box-ssh-add — load a VM-local private key into the stable dev-box
+# ssh-agent. The wrappers still prefer a forwarded workstation agent; this key
+# is the fallback for long-lived sessions when no agent is forwarded.
+#
+# Usage: dev-box-ssh-add <private-key-path>
+
+set -euo pipefail
+
+sock="${DEVBOX_SSH_AUTH_SOCK:-$HOME/.ssh/agent.sock}"
+key="${1:-}"
+
+if [ -z "$key" ]; then
+  echo "usage: dev-box-ssh-add <private-key-path>" >&2
+  exit 2
+fi
+
+if [ ! -f "$key" ]; then
+  cat >&2 <<MSG
+ERROR: Missing private key: $key
+
+Install the private key at $key, keep mode 0600, then rerun:
+  dev-box-ssh-add $key
+
+The matching public key should be at ${key}.pub.
+MSG
+  exit 1
+fi
+
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+
+if ! [ -S "$sock" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user start devbox-ssh-agent.service >/dev/null 2>&1 || true
+  fi
+fi
+
+if ! [ -S "$sock" ]; then
+  rm -f "$sock"
+  ssh-agent -a "$sock" >/tmp/devbox-ssh-agent.env
+fi
+
+SSH_AUTH_SOCK="$sock" ssh-add "$key"
+SSH_AUTH_SOCK="$sock" ssh-add -l
