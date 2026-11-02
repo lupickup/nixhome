@@ -46,3 +46,7 @@ The bundled files are sourced from `ThariqS/html-effectiveness` and redistribute
 ## Index page
 
 `index.html` is the masthead that links the entire gallery — reproduce locally if you want a one-page entry to all 20 patterns.
+
+## Know your unknowns
+
+`unknowns/index.html` opens "Know your unknowns", an 11-page collection that the masthead links to. Its pages are in `unknowns/`.
