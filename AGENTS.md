@@ -105,10 +105,15 @@ After a change worth picking up downstream:
 1. Fetch and reconcile with the remote default branch (`main` in this repo).
    Preserve unrelated work and intentionally unfinished feature branches. Stop
    on unresolved merge conflicts; never force-push or discard someone else's work.
-2. Validate and sign the intended nixhome commits, then push completed work to
-   the default branch as part of normal completion. No separate push approval
-   is needed for authorized implementation. Verify the working tree is clean
-   and the local default branch matches its remote.
+2. Validate and sign the intended nixhome commits. A supervised session then
+   pushes completed work to the default branch as part of normal completion;
+   no separate push approval is needed for authorized implementation. Verify
+   the working tree is clean and the local default branch matches its remote.
+   Unattended runs, started without a human in the loop, never push the
+   default branch or a tag. They push `agent/<workstream>` branches once the
+   repository's rules confine them to such branches, for the owner to merge
+   after CI; until then they leave their commits on a local branch for a
+   supervised session to land.
 3. In a consuming overlay that imports nixhome as a Git submodule, commit
    the updated submodule pointer. In an overlay that consumes a flake input,
    run `nix flake update nixhome` and commit the updated lockfile instead.
