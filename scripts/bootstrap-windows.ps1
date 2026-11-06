@@ -10,8 +10,9 @@
          with a browser login - no SSH key needed on a fresh box.
       2. Ensure the WSL distro exists (wsl --install). First install needs you to
          create the Linux user (and maybe reboot) and then rerun this script.
-      3. Inside WSL: clone (or fast-forward) the dotfiles repo with submodules,
-         then run its ./install (Nix + Home Manager + the rest of setup-wsl.sh).
+      3. Inside WSL: clone the dotfiles repo with submodules, at depth 1 unless
+         -CloneDepth says otherwise (or fast-forward an existing clone), then
+         run its ./install (Nix + Home Manager + the rest of setup-wsl.sh).
       4. Apply the repo's WinGet configuration (Windows packages), if present.
          Falls back to per-package `winget install` where `winget configure`
          is disabled.
@@ -31,6 +32,10 @@ param(
     [string]$Distro = 'Ubuntu-24.04',
     # Path inside WSL; ~/ or relative = under the Linux $HOME.
     [string]$DotfilesDir = '~/Dotfiles',
+    # History depth for a new clone; 0 means full. Depth 1 copies only the
+    # current commit, and later pulls fetch only newer ones.
+    [ValidateRange(0, 2147483647)]
+    [int]$CloneDepth = 1,
     # Passed to the repo's installer as HM_TARGET (empty = installer default).
     [string]$HmTarget = '',
     # Relative to the repo root.
@@ -126,7 +131,7 @@ opened (reboot first if Windows asks), then rerun this same command.
     Write-Step "Dotfiles in WSL ($DotfilesDir)"
     $bash = @'
 set -euo pipefail
-repo="$1"; dir="$2"; gcm="$3"; hm_target="$4"; shift 4
+repo="$1"; dir="$2"; gcm="$3"; hm_target="$4"; depth="$5"; shift 5
 [[ "$dir" == /* ]] || dir="$HOME/$dir"  # relative = under Linux $HOME
 [[ "$gcm" == "-" ]] && gcm=""          # '-' = empty (PS 5.1 drops empty args)
 [[ "$hm_target" == "-" ]] && hm_target=""
@@ -143,7 +148,9 @@ g=(git -c url.https://github.com/.insteadOf=git@github.com:)
 if [[ -n "$gcm" ]]; then g+=(-c credential.helper= -c "credential.helper=${gcm// /\\ }"); fi
 
 if [[ ! -d "$dir/.git" ]]; then
-  "${g[@]}" clone --recurse-submodules "$repo" "$dir"
+  depth_args=()
+  [[ "$depth" == 0 ]] || depth_args=(--depth "$depth")
+  "${g[@]}" clone ${depth_args[@]+"${depth_args[@]}"} --recurse-submodules "$repo" "$dir"
 elif [[ -z "$(git -C "$dir" status --porcelain --ignore-submodules)" ]]; then
   "${g[@]}" -C "$dir" pull --ff-only
 else
@@ -164,7 +171,7 @@ if [[ -n "$hm_target" ]]; then export HM_TARGET="$hm_target"; fi
     [IO.File]::WriteAllText($tmp, ($bash -replace "`r`n", "`n"))
     $tmpWsl = (& wsl.exe -d $Distro --exec wslpath -u "$tmp").Trim()
     Invoke-Native 'Clone dotfiles + run ./install in WSL' 'wsl.exe' (
-        @('-d', $Distro, '--exec', 'bash', $tmpWsl, $DotfilesRepo, $DotfilesDirArg, $gcmWsl, $hm) + $InstallArgs)
+        @('-d', $Distro, '--exec', 'bash', $tmpWsl, $DotfilesRepo, $DotfilesDirArg, $gcmWsl, $hm, "$CloneDepth") + $InstallArgs)
 }
 
 # --- 4. WinGet configuration -------------------------------------------------

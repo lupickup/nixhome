@@ -261,9 +261,10 @@ fetches it on demand from GitHub and pins it in your `flake.lock`.
 ## Bootstrap on a new machine
 
 **Windows (WSL):** one command from any PowerShell window. It installs the
-WSL distro, clones your overlay inside WSL (auth goes through the Windows Git
-Credential Manager, so a private repo works without SSH keys), runs its
-`./install`, then applies the overlay's `windows/winget.dsc.yaml` if present:
+WSL distro, clones your overlay inside WSL at depth 1 (`-CloneDepth 0` for full
+history; auth goes through the Windows Git Credential Manager, so a private
+repo works without SSH keys), runs its `./install`, then applies the overlay's
+`windows/winget.dsc.yaml` if present:
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/lupickup/nixhome/main/scripts/bootstrap-windows.ps1))) `
