@@ -38,7 +38,7 @@ modules/base/            Loaded for EVERY config. Declares dotfiles.context.*
 
 modules/home/            Home-Manager app modules. Each has its own enable.
   shell/{zsh,starship,zellij,shells,git,ssh}.nix
-  dev/{claude,codex,opencode,copilot,dev-box,agent-guardrails}.nix
+  dev/{claude,codex,opencode,copilot,dev-box,agent-guardrails,mbx}.nix
   platform/{linux,wsl,darwin}.nix
   platform/config-root.nix  Opt-in protection for the live XDG config root.
   skills/                Claude+Copilot skill installer. Bundles checkpoint,
@@ -180,6 +180,16 @@ local bare repository and verifies both properties.
 
 This guards against accidents on the client. Protect important branches on the
 server as well.
+
+### A shared build cache for Rust
+
+`modules.home.dev.mbx` installs [mbx](https://github.com/jdx/mr-boxington)
+(mr-boxington): Rust checkouts share compiled outputs through one store, and
+each checkout's `target/` becomes a link into it, pruned under a disk budget.
+Builds go through it explicitly (`mbx build`, `mbx test`, `mbx clippy`); plain
+`cargo` is unchanged, because the module never runs `mbx setup` or puts the
+package's Cargo shim on `PATH`. nixhome takes no flake inputs, so the host
+passes `package` from mbx's flake; the module's header shows how.
 
 ## Forking
 
