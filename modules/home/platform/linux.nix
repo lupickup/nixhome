@@ -40,7 +40,8 @@ in
       nerd-fonts.iosevka-term
     ] ++ lib.optional
       (ctx.clipboardBackend == "wl-clipboard" && ctx.platform != "wsl")
-      wl-clipboard;
+      wl-clipboard
+    ++ lib.optional (ctx.clipboardBackend == "xclip") xclip;
 
     home.sessionPath = lib.mkIf cfg.enableLinuxbrewPath [
       "/home/linuxbrew/.linuxbrew/bin"
