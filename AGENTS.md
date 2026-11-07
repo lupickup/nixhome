@@ -106,20 +106,25 @@ After a change worth picking up downstream:
    Preserve unrelated work and intentionally unfinished feature branches. Stop
    on unresolved merge conflicts; never force-push or discard someone else's work.
 2. Validate and sign the intended nixhome commits. A supervised session then
-   pushes completed work to the default branch as part of normal completion;
-   no separate push approval is needed for authorized implementation. Verify
-   the working tree is clean and the local default branch matches its remote.
-   Unattended runs, started without a human in the loop, never push the
-   default branch or a tag. They push `agent/<workstream>` branches once the
-   repository's rules confine them to such branches, for the owner to merge
-   after CI; until then they leave their commits on a local branch for a
-   supervised session to land.
+   pushes completed work to the default branch as part of finishing the task,
+   including work another session asked of it; a code change made at another
+   session's request gets an independent review first, from a review agent or
+   the session that asked. No separate push approval is needed for authorized
+   implementation. Verify the working tree is clean and the local default
+   branch matches its remote. Unattended runs, started by a schedule, an
+   automation or a dispatch, never push the default branch or a tag. They
+   commit on their own branch and report, and a supervised coordinating
+   session reviews and lands their work, until a landing queue lands
+   `agent/<workstream>` branches after CI. They never drive the owner's
+   browser or password manager.
 3. In a consuming overlay that imports nixhome as a Git submodule, commit
    the updated submodule pointer. In an overlay that consumes a flake input,
    run `nix flake update nixhome` and commit the updated lockfile instead.
 4. Always publish nixhome before an overlay commit that refers to it. Follow
    the overlay's completion policy for publishing that commit. Synchronizing
-   Git does not authorize activating a host configuration.
+   Git does not authorize activating a host configuration: installing,
+   restarting or applying anything on the owner's machines, spending money
+   and changing these rules still need the owner's word.
 
 For explicitly opted-in unattended repositories, see
 [the dedicated SSH signing helper](docs/git-agent-signing.md). Keep private
