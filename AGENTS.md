@@ -116,7 +116,10 @@ After a change worth picking up downstream:
    commit on their own branch and report, and a supervised coordinating
    session reviews and lands their work, until a landing queue lands
    `agent/<workstream>` branches after CI. They never drive the owner's
-   browser or password manager.
+   browser or password manager. A session whose credentials can't push here,
+   such as an agent environment's, hands its commits to one that can, as a
+   patch, and never publishes them anywhere else, a fork included: this
+   repository is public, and the Windows bootstrap runs its default branch.
 3. In a consuming overlay that imports nixhome as a Git submodule, commit
    the updated submodule pointer. In an overlay that consumes a flake input,
    run `nix flake update nixhome` and commit the updated lockfile instead.
