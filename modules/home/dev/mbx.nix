@@ -12,9 +12,14 @@
 # scripts, editors and agents count toward mbx's budget instead of leaving
 # unmanaged target/ directories behind. The shim hands commands that build
 # nothing (`cargo --version`, `metadata`, `fmt`, `install --list`) straight to
-# the real cargo, and `MBX_DISABLE=1` sends everything there. Programs that set
-# their own PATH, such as launchd agents, can prepend `shim.directory`. Nix
-# builds and `nix develop` shells put their own cargo first and are unaffected.
+# the real cargo, and `MBX_DISABLE=1` sends everything there. Nix builds and
+# `nix develop` shells put their own cargo first and are unaffected.
+#
+# PATH reaches the shim through ~/.local/libexec/mbx (`shim.directory`), a link
+# Home Manager keeps pointing at the current package's libexec/mbx, so the path
+# stays the same when mbx changes. Programs that set their own PATH, such as
+# launchd agents, prepend it too: their configuration then doesn't change with
+# mbx, so a switch that updates mbx doesn't restart them.
 #
 # The module never runs `mbx setup`, so `mbx doctor` keeps reporting "Cargo shim
 # is not installed": it looks only for the copy `mbx setup` writes. Check
@@ -41,6 +46,7 @@
 
 let
   cfg = config.modules.home.dev.mbx;
+  shimLink = ".local/libexec/mbx";
 in
 {
   options.modules.home.dev.mbx = {
@@ -59,21 +65,33 @@ in
       directory = lib.mkOption {
         type = lib.types.str;
         readOnly = true;
-        default = "${cfg.package}/libexec/mbx";
-        defaultText = lib.literalExpression ''"''${config.modules.home.dev.mbx.package}/libexec/mbx"'';
+        default = "${config.home.homeDirectory}/${shimLink}";
+        defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/${shimLink}"'';
         description = ''
-          Directory holding the package's Cargo shim, for programs that set
-          their own PATH, such as launchd agents. The shim removes this
-          directory from PATH before it looks for the real cargo, so prepend
-          this path (or a symlink to it), never a link to the shim placed in
-          another directory.
+          Where PATH finds the Cargo shim: a link to the package's
+          libexec/mbx that Home Manager keeps current, so the path stays the
+          same when mbx changes. Home Manager creates the link only with
+          `shim.enable`, so programs that set their own PATH, such as launchd
+          agents, should prepend it only when that is set. The shim takes its
+          own directory out of PATH, comparing directories with links
+          resolved, before it looks for the real cargo, so a link to the
+          directory works; a link to the shim file placed in another directory
+          makes the shim run itself until mbx gives up.
         '';
       };
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ];
-    home.sessionPath = lib.mkIf cfg.shim.enable [ cfg.shim.directory ];
-  };
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    { home.packages = [ cfg.package ]; }
+
+    (lib.mkIf cfg.shim.enable {
+      # One link to the directory, never a directory of links to its files.
+      home.file.${shimLink} = {
+        source = "${cfg.package}/libexec/mbx";
+        recursive = false;
+      };
+      home.sessionPath = [ cfg.shim.directory ];
+    })
+  ]);
 }

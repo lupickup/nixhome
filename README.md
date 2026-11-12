@@ -193,8 +193,11 @@ Build through it explicitly (`mbx build`, `mbx test`, `mbx clippy`), or set
 `shim.enable` to put the package's Cargo shim ahead of cargo on `PATH` in login
 shells, so plain `cargo` from shells, scripts, editors and agents builds through
 mbx too and counts toward its budget. Commands that build nothing go straight
-to cargo, and `MBX_DISABLE=1` sends everything there. Programs that set their
-own `PATH`, such as launchd agents, can prepend the read-only `shim.directory`.
+to cargo, and `MBX_DISABLE=1` sends everything there. With `shim.enable`,
+programs that set their own `PATH`, such as launchd agents, can prepend the
+read-only `shim.directory`: `~/.local/libexec/mbx`, a link that Home Manager
+creates and keeps pointing at the current package, so the path stays the same
+when mbx changes, and a switch that updates mbx doesn't restart those agents.
 The module never runs `mbx setup`, so `mbx doctor` still reports the shim as
 not installed; `command -v cargo` shows which one runs. Nix builds use their
 own cargo. nixhome takes no flake inputs, so the host passes `package` from
