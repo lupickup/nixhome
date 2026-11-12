@@ -1,0 +1,566 @@
+#!/bin/sh
+# mbx-cache-volume: put mbx's cache on an APFS volume of its own, capped by a
+# quota and left out of Time Machine and Spotlight.
+#
+# Time Machine takes local snapshots only of the volumes it backs up, so build
+# output on an excluded volume is never pinned by one: what mbx deletes is free
+# at once, and the quota caps what build output can take. An APFS volume has no
+# fixed size; it draws on its container's free space up to its quota.
+#
+# With --apply it makes each of these true, skipping what already is:
+#   1. A volume named --name (default BuildCache) in the APFS container that
+#      holds /System/Volumes/Data, with a quota of --quota GiB (default 400)
+#      and ownership enabled, mounted at /Volumes/<name>.
+#   2. Time Machine excludes it (tmutil addexclusion -v) and Spotlight does
+#      not index it (mdutil -i off).
+#   3. <mount>/mbx, private to you, is mbx's cache_dir. The cache moves only
+#      while no build is running.
+#   4. The target links into the previous cache that mbx's records name are
+#      gone: mbx does not replace a link into another cache, so a build
+#      through one fails. Each checkout gets a new link on its next build. If
+#      a build still fails because its target links into the old cache,
+#      delete that link.
+#   5. The previous cache is deleted; mbx rebuilds what it needs. It is moved
+#      aside first, so a run that stops partway finishes on the next one.
+#      --keep-old-cache keeps it until a run without it.
+#
+# A real target/ directory, left by a build that bypassed mbx, stays where it
+# is: mbx cannot move one to another volume. It is only build output; delete it.
+#
+# The volume gets no FileVault password of its own: macOS unlocks it when the
+# Mac starts, where the Data volume waits for a login password. On a Mac with
+# Apple silicon its contents stay encrypted with a key held by the Mac, and
+# <mount>/mbx is private to you.
+#
+# Without --apply it shows what it would do and changes nothing. Run it as
+# yourself: the steps that need root run through sudo, which asks for an
+# administrator's password, and tmutil also needs Full Disk Access for the
+# terminal app. It never changes mount options; it reports whether reads on
+# the volume refresh access times, which mbx's eviction uses.
+#
+# Exit status: 0 when everything is in place (or, in a dry run, planned), 1
+# when a step failed or the move waits for running builds, 2 on a usage error
+# or when a precondition does not hold.
+#
+# Tests substitute the system commands through MBX_CACHE_VOLUME_DISKUTIL,
+# MBX_CACHE_VOLUME_TMUTIL, MBX_CACHE_VOLUME_MDUTIL, MBX_CACHE_VOLUME_SUDO and
+# MBX_CACHE_VOLUME_PS.
+
+set -u
+
+GIB=1073741824
+
+name=BuildCache
+quota_gib=400
+apply=0
+keep_old=0
+mbx=
+data_volume=/System/Volumes/Data
+deleting_suffix=.mbx-cache-volume-deleting
+
+diskutil_cmd=${MBX_CACHE_VOLUME_DISKUTIL:-/usr/sbin/diskutil}
+tmutil_cmd=${MBX_CACHE_VOLUME_TMUTIL:-/usr/bin/tmutil}
+mdutil_cmd=${MBX_CACHE_VOLUME_MDUTIL:-/usr/bin/mdutil}
+sudo_cmd=${MBX_CACHE_VOLUME_SUDO:-/usr/bin/sudo}
+ps_cmd=${MBX_CACHE_VOLUME_PS:-/bin/ps}
+
+usage() {
+  cat <<'EOF'
+usage: mbx-cache-volume [--apply] [--name NAME] [--quota GIB] [--mbx PATH]
+                        [--keep-old-cache]
+EOF
+}
+
+die_usage() {
+  printf 'mbx-cache-volume: %s\n' "$*" >&2
+  usage >&2
+  exit 2
+}
+
+# Stop: a precondition does not hold.
+refuse() {
+  printf 'mbx-cache-volume: %s\n' "$*" >&2
+  exit 2
+}
+
+# Stop: a step failed.
+fail() {
+  printf 'mbx-cache-volume: %s\n' "$*" >&2
+  exit 1
+}
+
+say() {
+  printf '%s\n' "$*"
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --apply) apply=1; shift; continue ;;
+    --keep-old-cache) keep_old=1; shift; continue ;;
+    -h|--help) usage; exit 0 ;;
+    --name|--quota|--mbx) [ $# -ge 2 ] || die_usage "$1 needs a value" ;;
+    *) die_usage "unknown argument: $1" ;;
+  esac
+  case $1 in
+    --name)
+      case $2 in
+        ''|*[!A-Za-z0-9._-]*|.*) die_usage "--name takes letters, digits, '.', '_' and '-' only" ;;
+      esac
+      name=$2 ;;
+    --quota)
+      case $2 in
+        ''|*[!0-9]*|0) die_usage "--quota needs a whole number of GiB above 0, not '$2'" ;;
+      esac
+      quota_gib=$2 ;;
+    --mbx) mbx=$2 ;;
+  esac
+  shift 2
+done
+
+[ "$(uname -s)" = Darwin ] || refuse "this is for macOS"
+[ "$(id -u)" != 0 ] || refuse "run this as yourself, not as root; it uses sudo for the steps that need root"
+[ -n "${HOME:-}" ] || refuse "HOME is not set"
+[ -z "${MBX_CACHE_DIR:-}" ] || refuse "MBX_CACHE_DIR is set, so mbx would ignore its cache_dir setting; unset it first"
+if [ -z "$mbx" ]; then
+  mbx=$(command -v mbx 2>/dev/null) || mbx=
+fi
+[ -n "$mbx" ] && [ -x "$mbx" ] || refuse "mbx was not found; pass --mbx PATH"
+
+user=$(id -un)
+group=$(id -gn)
+quota_bytes=$((quota_gib * GIB))
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/mbx-cache-volume
+previous_file=$state_dir/previous-cache
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/mbx-cache-volume.XXXXXX") || fail "could not create a temporary directory"
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+
+# A value from a property list file, or nothing.
+plist() {
+  /usr/bin/plutil -extract "$2" raw -o - "$1" 2>/dev/null
+}
+
+gib() {
+  awk -v b="$1" 'BEGIN { printf "%.0f GiB", b / 1073741824 }'
+}
+
+# Whole GiB in an mbx size written as <n>GiB or <n>TiB, or nothing.
+size_gib() {
+  n=$(printf '%s\n' "$1" | sed -n 's/^\([0-9][0-9]*\) *GiB$/\1/p')
+  if [ -n "$n" ]; then
+    printf '%s' "$n"
+    return 0
+  fi
+  n=$(printf '%s\n' "$1" | sed -n 's/^\([0-9][0-9]*\) *TiB$/\1/p')
+  [ -z "$n" ] || printf '%s' "$((n * 1024))"
+}
+
+# Run, or in a dry run show, a step: as_root and as_user take the command as
+# shown, then the command to run.
+as_root() {
+  shown=$1
+  shift
+  if [ "$apply" = 0 ]; then
+    say "  would run: sudo $shown"
+    return 0
+  fi
+  say "  running: sudo $shown"
+  "$sudo_cmd" "$@"
+}
+
+as_user() {
+  shown=$1
+  shift
+  if [ "$apply" = 0 ]; then
+    say "  would run: $shown"
+    return 0
+  fi
+  say "  running: $shown"
+  "$@"
+}
+
+# Find the volume called $name: sets device, quota, mount, owners and uuid,
+# all empty when there is none.
+find_volume() {
+  device=
+  quota=
+  mount=
+  owners=
+  uuid=
+  "$diskutil_cmd" apfs list -plist > "$tmp/list.plist" 2>/dev/null || fail "diskutil apfs list failed"
+  i=0
+  while ref=$(plist "$tmp/list.plist" "Containers.$i.ContainerReference"); do
+    j=0
+    while volume_name=$(plist "$tmp/list.plist" "Containers.$i.Volumes.$j.Name"); do
+      if [ "$volume_name" = "$name" ]; then
+        [ "$ref" = "$container" ] || refuse "a volume named $name already exists in $ref; choose another --name"
+        [ -z "$device" ] || refuse "$container has more than one volume named $name"
+        device=$(plist "$tmp/list.plist" "Containers.$i.Volumes.$j.DeviceIdentifier")
+        quota=$(plist "$tmp/list.plist" "Containers.$i.Volumes.$j.CapacityQuota")
+      fi
+      j=$((j + 1))
+    done
+    i=$((i + 1))
+  done
+  [ -n "$device" ] || return 0
+  "$diskutil_cmd" info -plist "$device" > "$tmp/volume.plist" 2>/dev/null || fail "diskutil could not describe $device"
+  mount=$(plist "$tmp/volume.plist" MountPoint)
+  owners=$(plist "$tmp/volume.plist" GlobalPermissionsEnabled)
+  uuid=$(plist "$tmp/volume.plist" VolumeUUID)
+}
+
+# Delete a tree, including files and directories without write permission.
+remove_tree() {
+  chmod -R u+w "$1" 2>/dev/null
+  rm -rf "$1"
+}
+
+excluded() {
+  "$tmutil_cmd" isexcluded "$1" 2>/dev/null | grep -q '^\[Excluded\]'
+}
+
+indexing_off() {
+  "$mdutil_cmd" -s "$1" 2>/dev/null | grep -q 'Indexing disabled'
+}
+
+# Whether $1 can be deleted as the cache being replaced: an mbx cache that is
+# neither the new one, nor above it, nor home.
+deletable_cache() {
+  case $1 in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case $1 in
+    /|"$HOME"|"$HOME"/|"$dir"|"$dir"/*|"$mount"|"$mount"/*) return 1 ;;
+  esac
+  case "$dir/" in
+    "$1"/*) return 1 ;;
+  esac
+  [ -d "$1" ] && [ ! -L "$1" ] || return 1
+  # Only this script names a directory so, after checking it held a cache.
+  case $1 in
+    *"$deleting_suffix") return 0 ;;
+  esac
+  [ -d "$1/actions" ] || return 1
+  [ -e "$1/shims/.mbx-shims" ] || [ -d "$1/targets" ]
+}
+
+# Processes using the cache at $1: mbx, and anything naming the cache in its
+# arguments, such as a compiler run from its shims or a program run from a
+# managed target. Prints "pid name" pairs, joined by commas.
+cache_users() {
+  "$ps_cmd" -axo pid=,comm= > "$tmp/ps-comm" 2>/dev/null || :
+  "$ps_cmd" -axww -o pid=,args= > "$tmp/ps-args" 2>/dev/null || :
+  awk '{
+      pid = $1
+      sub(/^[ \t]*[0-9]+[ \t]+/, "")
+      n = split($0, parts, "/")
+      print pid "\t" parts[n]
+    }' "$tmp/ps-comm" > "$tmp/ps-names"
+  {
+    awk -v me="$$" -F '\t' '$1 != me && $2 == "mbx" { print $1 }' "$tmp/ps-names"
+    MBX_CACHE_VOLUME_OLD="$1/" awk -v me="$$" \
+      '$1 != me && index($0, ENVIRON["MBX_CACHE_VOLUME_OLD"]) { print $1 }' "$tmp/ps-args"
+  } | sort -un | while read -r pid; do
+    printf '%s %s, ' "$pid" "$(awk -F '\t' -v pid="$pid" '$1 == pid { print $2; exit }' "$tmp/ps-names")"
+  done | sed 's/, $//'
+}
+
+# Target paths the cache at $1 has records of: its checkout records, which
+# expire a month after a checkout's last build, its probe records, which stay,
+# and the records of its managed targets.
+cache_target_paths() {
+  for record in "$1"/actions/checkouts/v1/*/*.json "$1"/cargo-roots/v1/*.json; do
+    [ -f "$record" ] || continue
+    path=$(plist "$record" target_dir)
+    [ -z "$path" ] || printf '%s\n' "$path"
+  done
+  for record in "$1/$views_rel/v1"/*.json; do
+    [ -f "$record" ] || continue
+    path=$(plist "$record" workspace_root)
+    [ -z "$path" ] || printf '%s/target\n' "$path"
+  done
+}
+
+# Those that are links to a managed target in the cache at $1: links mbx would
+# leave dangling once the cache moves.
+stale_links() {
+  views=$1/$views_rel/v1
+  cache_target_paths "$1" | sort -u | while IFS= read -r link; do
+    case $link in
+      /*) ;;
+      *) continue ;;
+    esac
+    [ -L "$link" ] || continue
+    destination=$(readlink "$link") || continue
+    case $destination in
+      "$views"/*) ;;
+      *) continue ;;
+    esac
+    digest=${destination#"$views"/}
+    case $digest in
+      *[!0-9a-f]*) continue ;;
+    esac
+    [ ${#digest} -eq 64 ] || continue
+    printf '%s\n' "$link"
+  done
+}
+
+# Report whether reads on the directory refresh access times, as mbx's doctor
+# checks them.
+atime_report() {
+  probe=$(mktemp "$1/.atime-probe.XXXXXX" 2>/dev/null) || return 0
+  printf 'probe\n' > "$probe"
+  touch -t 200001010000 "$probe"
+  cat "$probe" > /dev/null
+  accessed=$(stat -f %a "$probe" 2>/dev/null)
+  rm -f "$probe"
+  if [ "${accessed:-0}" -gt 946857600 ]; then
+    say "atime: reads on $mount refresh access times, so mbx's eviction can see them"
+  else
+    say "atime: reads on $mount do not refresh access times, so mbx's eviction cannot see them; APFS refreshes them only on volumes mounted with strictatime, and this script leaves mount options alone"
+  fi
+}
+
+if [ "$apply" = 1 ]; then
+  say "mbx-cache-volume: applying"
+else
+  say "mbx-cache-volume: dry run; nothing changes without --apply"
+fi
+
+store=$("$mbx" cache dir 2>/dev/null) || fail "'mbx cache dir' failed"
+case $store in
+  /*/actions) current=${store%/actions} ;;
+  *) fail "mbx reported an unexpected store directory: $store" ;;
+esac
+target_root=$("$mbx" settings get target.root 2>/dev/null) || target_root=
+case $target_root in
+  /*) refuse "target.root is $target_root, so managed targets would not move with the cache; unset it (mbx settings unset target.root) or move them yourself" ;;
+esac
+views_rel=${target_root:-targets}
+current_bytes=$("$mbx" cache stats --json 2>/dev/null |
+  sed -n 's/.*"combined_total_bytes": *\([0-9][0-9]*\).*/\1/p' | head -n 1)
+
+"$diskutil_cmd" info -plist "$data_volume" > "$tmp/data.plist" 2>/dev/null ||
+  fail "diskutil could not describe $data_volume"
+container=$(plist "$tmp/data.plist" APFSContainerReference)
+[ -n "$container" ] || refuse "$data_volume is not on an APFS volume"
+
+find_volume
+if [ -z "$device" ]; then
+  [ ! -e "/Volumes/$name" ] || refuse "/Volumes/$name already exists; choose another --name"
+  say "volume $name: not in $container yet"
+  as_root "diskutil apfs addVolume $container APFS $name -quota $quota_bytes  ($quota_gib GiB)" \
+    "$diskutil_cmd" apfs addVolume "$container" APFS "$name" -quota "$quota_bytes" ||
+    fail "diskutil could not add the volume"
+  if [ "$apply" = 1 ]; then
+    find_volume
+    [ -n "$device" ] || fail "diskutil reported success, but $container has no volume named $name"
+  fi
+else
+  say "volume $name: $device in $container"
+  case $quota in
+    "$quota_bytes") say "  ok: quota $quota_gib GiB" ;;
+    ''|0) say "  note: it has no quota; diskutil cannot add one to an existing volume" ;;
+    *) say "  note: its quota is $(gib "$quota"), not $quota_gib GiB; diskutil cannot change a quota in place, so it stays" ;;
+  esac
+fi
+
+if [ -n "$device" ] && [ -z "$mount" ]; then
+  as_root "diskutil mount $device" "$diskutil_cmd" mount "$device" || fail "could not mount $device"
+  [ "$apply" = 0 ] || find_volume
+  [ -n "$mount" ] || [ "$apply" = 0 ] || fail "$device did not mount"
+fi
+[ -n "$mount" ] || mount=/Volumes/$name
+case $mount in
+  *[[:space:]]*) fail "$name is mounted at '$mount'; a path with spaces breaks some builds. Unmount whichever volume holds /Volumes/$name and run this again" ;;
+esac
+
+if [ -n "$device" ]; then
+  if [ "$owners" = true ]; then
+    say "  ok: ownership enabled"
+  else
+    as_root "diskutil enableOwnership $device" "$diskutil_cmd" enableOwnership "$device" ||
+      fail "could not enable ownership on $device"
+  fi
+elif [ "$apply" = 0 ]; then
+  say "  would run: sudo diskutil enableOwnership <device>, if the new volume ignores ownership"
+fi
+
+if [ -n "$device" ] && excluded "$mount"; then
+  say "  ok: Time Machine excludes $mount"
+else
+  as_root "tmutil addexclusion -v $mount" "$tmutil_cmd" addexclusion -v "$mount"
+  if [ "$apply" = 1 ] && ! excluded "$mount"; then
+    fail "Time Machine still includes $mount. tmutil needs Full Disk Access for the app running this script (System Settings > Privacy & Security > Full Disk Access); grant it and run this again"
+  fi
+fi
+
+if [ -n "$device" ] && indexing_off "$mount"; then
+  say "  ok: Spotlight does not index $mount"
+else
+  as_root "mdutil -i off $mount" "$mdutil_cmd" -i off "$mount"
+  if [ "$apply" = 1 ] && ! indexing_off "$mount"; then
+    say "  warning: Spotlight may still index $mount; check with 'mdutil -s $mount'"
+  fi
+fi
+
+dir=$mount/mbx
+if [ -d "$dir" ] && [ ! -L "$dir" ]; then
+  owner=$(stat -f %Su "$dir")
+  [ "$owner" = "$user" ] || refuse "$dir belongs to $owner, not $user"
+  say "  ok: $dir exists"
+else
+  [ ! -e "$dir" ] && [ ! -L "$dir" ] || refuse "$dir exists but is not a directory"
+  as_root "install -d -m 700 -o $user -g $group $dir" \
+    /usr/bin/install -d -m 700 -o "$user" -g "$group" "$dir" || fail "could not create $dir"
+fi
+if [ "$apply" = 1 ]; then
+  probe=$(mktemp "$dir/.write-probe.XXXXXX" 2>/dev/null) || fail "$user cannot write to $dir"
+  rm -f "$probe"
+fi
+
+budget=$("$mbx" settings get gc.max_total_size 2>/dev/null) || budget=
+keep_free=$("$mbx" settings get gc.min_free_size 2>/dev/null) || keep_free=
+say "mbx: cache_dir is $current; gc.max_total_size ${budget:-unset}, gc.min_free_size ${keep_free:-unset}"
+budget_gib=$(size_gib "$budget")
+keep_free_gib=$(size_gib "$keep_free")
+if [ -n "$budget_gib" ] && [ -n "$keep_free_gib" ] && [ $((budget_gib + keep_free_gib)) -gt "$quota_gib" ]; then
+  room=$((quota_gib - keep_free_gib))
+  [ "$room" -ge 0 ] || room=0
+  say "  note: mbx keeps gc.min_free_size free on its cache's volume, so with a $quota_gib GiB quota it collects once the volume holds $room GiB, short of gc.max_total_size"
+fi
+if [ "$current" = "$dir" ]; then
+  say "  ok: mbx uses $dir"
+else
+  busy=$(cache_users "$current")
+  if [ -n "$busy" ] && [ "$apply" = 1 ]; then
+    say "  in use by $busy, so the cache stays where it is for now; run this again once they have stopped"
+    exit 1
+  fi
+  [ -z "$busy" ] || say "  note: in use now by $busy; --apply moves the cache only once they have stopped"
+  pending=
+  [ ! -f "$previous_file" ] || pending=$(cat "$previous_file")
+  if [ -n "$pending" ] && [ "$pending" != "$current" ] && { [ -e "$pending" ] || [ -L "$pending" ]; }; then
+    refuse "$previous_file names $pending, a cache an earlier run moved away from and has not deleted; run this again with that run's --name to finish, or delete $pending and $previous_file"
+  fi
+  if [ "$apply" = 1 ]; then
+    if ! mkdir -p "$state_dir" || ! printf '%s\n' "$current" > "$previous_file"; then
+      fail "could not record the previous cache in $previous_file"
+    fi
+  fi
+  as_user "mbx settings set cache_dir $dir" "$mbx" settings set cache_dir "$dir" ||
+    fail "could not set mbx's cache_dir"
+  if [ "$apply" = 1 ]; then
+    store=$("$mbx" cache dir 2>/dev/null)
+    [ "$store" = "$dir/actions" ] || fail "mbx still reports its store at $store, not $dir/actions"
+  fi
+fi
+
+waiting=0
+previous=
+if [ -f "$previous_file" ]; then
+  previous=$(cat "$previous_file")
+  # A run stopped between moving the cache aside and recording that.
+  if [ ! -e "$previous" ] && [ ! -L "$previous" ] &&
+      [ -d "$previous$deleting_suffix" ] && [ ! -L "$previous$deleting_suffix" ]; then
+    previous=$previous$deleting_suffix
+  fi
+elif [ "$apply" = 0 ] && [ "$current" != "$dir" ]; then
+  previous=$current
+fi
+case $previous in
+  "$dir"|"$dir"/*|"$mount"|"$mount"/*)
+    say "previous cache: $previous is the new one, so nothing is removed"
+    previous=
+    [ "$apply" = 0 ] || rm -f "$previous_file"
+    ;;
+esac
+if [ -n "$previous" ] && [ -e "$previous" ]; then
+  case $previous in
+    *"$deleting_suffix") : > "$tmp/links" ;;
+    *) stale_links "$previous" > "$tmp/links" ;;
+  esac
+  if [ -s "$tmp/links" ]; then
+    say "target links: $(sed -n '$=' "$tmp/links") checkouts link into $previous; each gets a new link on its next build"
+    if [ "$apply" = 0 ]; then
+      sed 's|^|  would remove the link |' "$tmp/links"
+    else
+      busy=$(cache_users "$previous")
+      if [ -n "$busy" ]; then
+        say "  they stay for now: the cache is in use by $busy; run this again once they have stopped"
+        exit 1
+      fi
+      while IFS= read -r link; do
+        if rm -f "$link"; then
+          say "  removed the link $link"
+        else
+          fail "could not remove $link"
+        fi
+      done < "$tmp/links"
+    fi
+  fi
+fi
+
+if [ -n "$previous" ]; then
+  if [ ! -e "$previous" ] && [ ! -L "$previous" ]; then
+    [ "$apply" = 0 ] || rm -f "$previous_file"
+  elif [ "$keep_old" = 1 ]; then
+    say "previous cache: kept at $previous (--keep-old-cache); run this again without it to delete it"
+  elif ! deletable_cache "$previous"; then
+    say "previous cache: $previous does not look like an mbx cache, so it stays; delete it yourself if it is one"
+    [ "$apply" = 0 ] || rm -f "$previous_file"
+  else
+    size=
+    [ "$previous" != "$current" ] || [ -z "$current_bytes" ] || size=" ($(gib "$current_bytes") by mbx's count)"
+    if [ "$apply" = 0 ]; then
+      say "previous cache: $previous$size"
+      say "  would run: rm -rf $previous, once mbx uses $dir and nothing uses $previous"
+    else
+      busy=$(cache_users "$previous")
+      store=$("$mbx" cache dir 2>/dev/null)
+      if [ "$store" != "$dir/actions" ]; then
+        fail "mbx reports its store at $store, not $dir/actions, so $previous stays"
+      elif [ -n "$busy" ]; then
+        say "previous cache: $previous stays for now: it is in use by $busy; run this again once they have stopped"
+        waiting=1
+      else
+        say "previous cache: $previous$size"
+        doomed=$previous
+        case $previous in
+          *"$deleting_suffix") ;;
+          *)
+            doomed=$previous$deleting_suffix
+            [ ! -L "$doomed" ] || fail "$doomed is a symlink; remove it and run this again"
+            [ ! -e "$doomed" ] || remove_tree "$doomed"
+            say "  running: mv $previous $doomed"
+            mv "$previous" "$doomed" || fail "could not move $previous aside to delete it"
+            printf '%s\n' "$doomed" > "$previous_file" ||
+              fail "could not record $doomed in $previous_file; delete it yourself"
+            ;;
+        esac
+        say "  running: rm -rf $doomed"
+        remove_tree "$doomed"
+        [ ! -e "$doomed" ] || fail "could not delete all of $doomed; run this again to finish"
+        rm -f "$previous_file"
+        say "  its space returns once the local Time Machine snapshots taken while it existed are gone ('tmutil listlocalsnapshots /' lists them)"
+      fi
+    fi
+  fi
+fi
+
+[ "$apply" = 0 ] || atime_report "$dir"
+if [ -n "$uuid" ]; then
+  say "volume UUID: $uuid"
+fi
+
+say "note: a real target/ directory, left by a build that bypassed mbx, stays where it is, since mbx cannot move one to another volume. It is only build output, so delete it."
+say "note: $name gets no FileVault password: macOS unlocks it when the Mac starts, where the Data volume waits for a login password. On Apple silicon its contents stay encrypted with a key held by this Mac, and $dir is private to you."
+if [ "$apply" = 0 ]; then
+  say "Nothing changed. Run again with --apply to make these changes; sudo asks for your password."
+  exit 0
+fi
+[ "$waiting" = 0 ] || exit 1
+say "done: mbx's cache is $dir, on $name ($quota_gib GiB quota), which Time Machine and Spotlight skip"
+exit 0

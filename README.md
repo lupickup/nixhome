@@ -61,6 +61,7 @@ scripts/                 Bundled helper scripts.
   ssh-vscode-wrapper, ssh-sign-wrapper, resolve-vscode-ssh-sock
                                        Remote dev-box agent forwarding survival.
   free-space-guard                     Thins local snapshots, runs mbx gc (macOS).
+  mbx-cache-volume                     Moves mbx's cache to its own volume (macOS).
 
 overlays/                Nixpkgs overlays, also exported as flake outputs.
   agent-guardrails/      git that refuses forced pushes, its patch and checks.
@@ -198,6 +199,23 @@ The module never runs `mbx setup`, so `mbx doctor` still reports the shim as
 not installed; `command -v cargo` shows which one runs. Nix builds use their
 own cargo. nixhome takes no flake inputs, so the host passes `package` from
 mbx's flake; the module's header shows how.
+
+On macOS, `scripts/mbx-cache-volume` gives mbx's cache an APFS volume of its
+own, capped by a quota (400 GiB by default) and excluded from Time Machine and
+Spotlight. Time Machine snapshots only the volumes it backs up, so a local
+snapshot never holds on to build output that mbx has deleted. The script shows
+what it would do; `--apply` does it, running the steps that need root through
+sudo. It moves the cache only while nothing uses it, then deletes the old one.
+mbx won't replace a `target` link into another cache, so the script first
+removes the links into the old cache that mbx's records name, and each checkout
+gets a new link on its next build; if a build still fails because its `target`
+links into the old cache, delete that link. mbx can't move a real `target/`
+directory, left by a build that bypassed it, to another volume; that is only
+build output, so delete it. The new volume has no FileVault password of its
+own: macOS unlocks it at startup, before anyone logs in, though on Apple
+silicon its contents stay encrypted with a key held by the Mac. The script
+leaves mount options alone: APFS refreshes access times, which mbx's eviction
+reads, only on volumes mounted with `strictatime`.
 
 ### Keeping writable disk space above a floor
 

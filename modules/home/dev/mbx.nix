@@ -20,7 +20,8 @@
 # is not installed": it looks only for the copy `mbx setup` writes. Check
 # `command -v cargo` instead. mbx keeps its settings, such as
 # `mbx settings set gc.max_total_size 80GiB`, in its own config file, which
-# this module leaves alone.
+# this module leaves alone. On macOS, scripts/mbx-cache-volume moves mbx's
+# cache to a quota-capped APFS volume that Time Machine and Spotlight skip.
 #
 # nixhome takes no flake inputs, so the host passes the package from mbx's
 # flake (https://github.com/jdx/mr-boxington):
