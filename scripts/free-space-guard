@@ -1,0 +1,319 @@
+#!/bin/sh
+# free-space-guard: keep writable space on a macOS volume above a floor.
+#
+# Writable space is what df reports (statfs's f_bavail). It leaves out
+# purgeable space, which Finder counts as free: a Time Machine local snapshot
+# keeps every file deleted after it was taken on disk until the snapshot goes.
+#
+# Below --thin-below GiB the guard deletes local Time Machine snapshots oldest
+# first and keeps the newest. If the volume is still under --floor GiB it
+# deletes the newest as well, before `mbx gc` (with --mbx) runs, since a
+# snapshot would pin whatever gc deletes. If the volume is still under the
+# floor it posts a notification naming the largest volumes, at most once per
+# --notify-every seconds.
+#
+# It deletes only snapshots named com.apple.TimeMachine.<date>.local, never
+# com.apple.os.update-* ones, and mbx-managed build state through `mbx gc`.
+# --dry-run reports what a run would do and changes nothing.
+#
+# Exit status: 0 at or above the floor, 1 still under it, 2 on a usage error
+# or when the volume cannot be measured.
+#
+# Tests substitute df, tmutil and osascript through FREE_SPACE_GUARD_DF,
+# FREE_SPACE_GUARD_TMUTIL and FREE_SPACE_GUARD_OSASCRIPT.
+
+set -u
+
+GIB_KIB=1048576
+
+volume=/System/Volumes/Data
+thin_below=120
+floor=100
+mbx=
+settle=10
+notify_every=3600
+state_dir=
+log_file=
+dry_run=0
+
+df_cmd=${FREE_SPACE_GUARD_DF:-/bin/df}
+tmutil_cmd=${FREE_SPACE_GUARD_TMUTIL:-/usr/bin/tmutil}
+osascript_cmd=${FREE_SPACE_GUARD_OSASCRIPT:-/usr/bin/osascript}
+
+usage() {
+  cat <<'EOF'
+usage: free-space-guard [--dry-run] [--volume PATH] [--thin-below GIB]
+                        [--floor GIB] [--mbx PATH] [--settle SECONDS]
+                        [--notify-every SECONDS] [--state-dir DIR] [--log FILE]
+EOF
+}
+
+fail_usage() {
+  printf 'free-space-guard: %s\n' "$*" >&2
+  usage >&2
+  exit 2
+}
+
+whole_number() {
+  case $2 in
+    ''|*[!0-9]*) fail_usage "$1 needs a whole number, not '$2'" ;;
+  esac
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --dry-run) dry_run=1; shift; continue ;;
+    -h|--help) usage; exit 0 ;;
+    --volume|--thin-below|--floor|--mbx|--settle|--notify-every|--state-dir|--log)
+      [ $# -ge 2 ] || fail_usage "$1 needs a value" ;;
+    *) fail_usage "unknown argument: $1" ;;
+  esac
+  case $1 in
+    --volume) volume=$2 ;;
+    --thin-below) whole_number "$1" "$2"; thin_below=$2 ;;
+    --floor) whole_number "$1" "$2"; floor=$2 ;;
+    --mbx) mbx=$2 ;;
+    --settle) whole_number "$1" "$2"; settle=$2 ;;
+    --notify-every) whole_number "$1" "$2"; notify_every=$2 ;;
+    --state-dir) state_dir=$2 ;;
+    --log) log_file=$2 ;;
+  esac
+  shift 2
+done
+
+[ "$floor" -le "$thin_below" ] || fail_usage "--floor ($floor) must not exceed --thin-below ($thin_below)"
+if [ -z "$state_dir" ]; then
+  [ -n "${HOME:-}" ] || fail_usage "HOME is not set; pass --state-dir"
+  state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/free-space-guard
+fi
+
+log() {
+  line="$(date '+%Y-%m-%dT%H:%M:%S%z') $*"
+  if [ -n "$log_file" ]; then
+    printf '%s\n' "$line" >> "$log_file"
+  else
+    printf '%s\n' "$line"
+  fi
+}
+
+# Log another command's output, one line at a time.
+log_lines() {
+  while IFS= read -r output_line; do
+    log "  $1: $output_line"
+  done
+}
+
+thin_kib=$((thin_below * GIB_KIB))
+floor_kib=$((floor * GIB_KIB))
+removed=0
+failed=0
+planned=0
+
+# KiB the volume can still be written with, as df reports it.
+writable_kib() {
+  "$df_cmd" -Pk "$volume" 2>/dev/null |
+    awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4; found = 1 } END { exit !found }'
+}
+
+# A KiB count as GiB, or TiB from 1 TiB up.
+human() {
+  awk -v k="$1" 'BEGIN {
+    if (k >= 1073741824) printf "%.1f TiB", k / 1073741824
+    else printf "%.0f GiB", k / 1048576
+  }'
+}
+
+# Dates of the volume's local Time Machine snapshots, oldest first. Anything
+# not named exactly like a Time Machine snapshot is left out.
+snapshot_dates() {
+  "$tmutil_cmd" listlocalsnapshots "$volume" 2>/dev/null |
+    sed -n 's/^com\.apple\.TimeMachine\.\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{6\}\)\.local$/\1/p' |
+    sort -u
+}
+
+delete_snapshot() {
+  case $1 in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) log "refusing to delete '$1': not a Time Machine snapshot date"; return 1 ;;
+  esac
+  if [ "$dry_run" = 1 ]; then
+    planned=$((planned + 1))
+    log "would delete local snapshot com.apple.TimeMachine.$1.local"
+    return 0
+  fi
+  if output=$("$tmutil_cmd" deletelocalsnapshots "$1" 2>&1); then
+    removed=$((removed + 1))
+    log "deleted local snapshot com.apple.TimeMachine.$1.local"
+    return 0
+  fi
+  failed=$((failed + 1))
+  log "could not delete local snapshot com.apple.TimeMachine.$1.local: $(printf '%s' "$output" | tr '\n' ' ')"
+  return 1
+}
+
+# Measure again, giving APFS up to --settle seconds to return a deleted
+# snapshot's blocks before deciding whether to delete another.
+remeasure() {
+  waited=0
+  while :; do
+    kib=$(writable_kib) || return 1
+    [ "$kib" -ge "$thin_kib" ] && return 0
+    [ "$waited" -ge "$settle" ] && return 0
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+measure_or_exit() {
+  remeasure && return 0
+  log "could not measure writable space on $volume"
+  exit 2
+}
+
+# The largest volumes in the guarded volume's APFS container and the size of
+# mbx's cache: no paths inside anyone's home directory. Local file systems
+# only, so an unreachable network mount cannot stall it.
+usage_summary() {
+  device=$("$df_cmd" -Pk "$volume" 2>/dev/null | awk 'NR == 2 { print $1 }')
+  container=$(printf '%s\n' "$device" | sed -n 's|^\(/dev/disk[0-9][0-9]*\)s[0-9].*|\1|p')
+  summary=
+  if [ -n "$container" ]; then
+    tab=$(printf '\t')
+    summary=$("$df_cmd" -Pkl 2>/dev/null | awk -v prefix="${container}s" '
+      NR > 1 && index($1, prefix) == 1 && $3 ~ /^[0-9]+$/ {
+        mount = $6
+        for (i = 7; i <= NF; i++) mount = mount " " $i
+        print $3 "\t" mount
+      }' | sort -rn | head -n 3 | while IFS="$tab" read -r used mount; do
+        printf '%s %s, ' "$mount" "$(human "$used")"
+      done)
+    summary=${summary%, }
+  fi
+  if [ -n "$mbx" ]; then
+    bytes=$("$mbx" cache stats --json 2>/dev/null |
+      sed -n 's/.*"combined_total_bytes": *\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    if [ -n "$bytes" ]; then
+      summary="${summary:+$summary; }mbx cache $(human $((bytes / 1024)))"
+    fi
+  fi
+  printf '%s' "${summary:-unknown}"
+}
+
+notify() {
+  now=$(date +%s)
+  last=$(cat "$state_dir/last-notified" 2>/dev/null) || last=0
+  case $last in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt "$notify_every" ]; then
+    log "still under the floor; last notified $(((now - last) / 60)) minutes ago"
+    return 0
+  fi
+  if "$osascript_cmd" -e 'on run argv' \
+      -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+      -e 'end run' "Disk under ${floor} GiB free" "$1" >/dev/null 2>&1; then
+    printf '%s\n' "$now" > "$state_dir/last-notified"
+    log "notified: $1"
+  else
+    log "could not post a notification: $1"
+  fi
+}
+
+release_lock() {
+  rm -f "$state_dir/lock/pid"
+  rmdir "$state_dir/lock" 2>/dev/null
+}
+
+# One run at a time: launchd never overlaps its own runs, but a manual run can.
+acquire_lock() {
+  mkdir -p "$state_dir" || exit 2
+  if ! mkdir "$state_dir/lock" 2>/dev/null; then
+    holder=$(cat "$state_dir/lock/pid" 2>/dev/null)
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+      log "another run (pid $holder) is in progress"
+      exit 0
+    fi
+    release_lock
+    mkdir "$state_dir/lock" 2>/dev/null || { log "could not take $state_dir/lock"; exit 2; }
+  fi
+  printf '%s\n' "$$" > "$state_dir/lock/pid"
+  trap release_lock EXIT
+  trap 'exit 2' HUP INT TERM
+}
+
+if ! kib=$(writable_kib); then
+  log "could not measure writable space on $volume"
+  exit 2
+fi
+
+if [ "$kib" -ge "$thin_kib" ]; then
+  [ "$dry_run" = 1 ] && log "$(human "$kib") writable on $volume, not under $thin_below GiB: nothing to do"
+  exit 0
+fi
+
+mode=
+if [ "$dry_run" = 1 ]; then
+  mode=" (dry run: nothing will change)"
+else
+  acquire_lock
+fi
+log "$(human "$kib") writable on $volume, under $thin_below GiB$mode"
+
+snapshots=$(snapshot_dates)
+newest=$(printf '%s\n' "$snapshots" | sed -n '$p')
+[ -n "$snapshots" ] || log "no local Time Machine snapshots to delete"
+
+for snapshot in $snapshots; do
+  [ "$kib" -lt "$thin_kib" ] || break
+  [ "$snapshot" != "$newest" ] || break
+  if delete_snapshot "$snapshot" && [ "$dry_run" = 0 ]; then
+    measure_or_exit
+  fi
+done
+
+if [ -n "$newest" ] && [ "$kib" -lt "$floor_kib" ]; then
+  log "still under the $floor GiB floor, so the newest snapshot goes too"
+  if delete_snapshot "$newest" && [ "$dry_run" = 0 ]; then
+    measure_or_exit
+  fi
+fi
+
+if [ -n "$mbx" ] && [ "$kib" -lt "$thin_kib" ]; then
+  if [ "$dry_run" = 1 ]; then
+    log "would run $mbx gc, which previews:"
+    { "$mbx" gc --dry-run 2>&1; echo "exit $?"; } | log_lines mbx
+  else
+    log "running $mbx gc"
+    { "$mbx" gc 2>&1; echo "exit $?"; } | log_lines mbx
+    kib=$(writable_kib) || { log "could not measure writable space on $volume"; exit 2; }
+  fi
+fi
+
+if [ "$dry_run" = 1 ]; then
+  log "would remove $planned local snapshots; nothing changed"
+  if [ "$kib" -lt "$floor_kib" ]; then
+    log "would notify if still under the floor; largest: $(usage_summary)"
+    exit 1
+  fi
+  exit 0
+fi
+
+remaining=$(snapshot_dates | sed -n '$=')
+log "$(human "$kib") writable on $volume after removing $removed local snapshots ($failed failed); ${remaining:-0} left"
+
+if [ "$kib" -lt "$floor_kib" ]; then
+  actions="after removing $removed local snapshots"
+  [ -n "$mbx" ] && actions="$actions and running mbx gc"
+  [ "$failed" -gt 0 ] && actions="$actions; $failed snapshots could not be removed"
+  details=
+  if [ -n "$log_file" ]; then
+    details=$log_file
+    if [ -n "${HOME:-}" ]; then
+      case $log_file in
+        "$HOME"/*) rest=${log_file#"$HOME"}; details="~$rest" ;;
+      esac
+    fi
+    details=" Details: $details"
+  fi
+  notify "$(human "$kib") writable, under the $floor GiB floor, $actions. Largest: $(usage_summary).$details"
+  exit 1
+fi
+exit 0

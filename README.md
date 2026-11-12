@@ -41,6 +41,7 @@ modules/home/            Home-Manager app modules. Each has its own enable.
   dev/{claude,codex,opencode,copilot,dev-box,agent-guardrails,mbx}.nix
   platform/{linux,wsl,darwin}.nix
   platform/config-root.nix  Opt-in protection for the live XDG config root.
+  platform/free-space-guard.nix  Keeps writable disk space above a floor (macOS).
   skills/                Claude+Copilot skill installer. Bundles checkpoint,
                          codex-import, html-effectiveness, visual-explainer.
   cli-tools.nix          Coming soon (currently in private overlay).
@@ -59,6 +60,7 @@ scripts/                 Bundled helper scripts.
   install-zellij-plugins.sh           Pinned 3rd-party WASM plugins.
   ssh-vscode-wrapper, ssh-sign-wrapper, resolve-vscode-ssh-sock
                                        Remote dev-box agent forwarding survival.
+  free-space-guard                     Thins local snapshots, runs mbx gc (macOS).
 
 overlays/                Nixpkgs overlays, also exported as flake outputs.
   agent-guardrails/      git that refuses forced pushes, its patch and checks.
@@ -196,6 +198,29 @@ The module never runs `mbx setup`, so `mbx doctor` still reports the shim as
 not installed; `command -v cargo` shows which one runs. Nix builds use their
 own cargo. nixhome takes no flake inputs, so the host passes `package` from
 mbx's flake; the module's header shows how.
+
+### Keeping writable disk space above a floor
+
+Finder and most menu-bar monitors count purgeable space as free, including
+Time Machine's local snapshots, which keep every file deleted after they were
+taken on disk until they go. On macOS, `modules.home.platform.free-space-guard`
+runs a launchd agent every 15 minutes that measures writable space as `df`
+does. Below `thinBelow` GiB (120) it deletes local Time Machine snapshots,
+oldest first, keeping the newest unless the volume is under `floor` GiB (100),
+then runs `mbx gc` when `modules.home.dev.mbx` is enabled. If it cannot get
+back above the floor, it posts a notification naming the largest volumes and
+the size of mbx's cache, at most once an hour. It deletes nothing else, and
+needs no root.
+
+```nix
+modules.home.platform.free-space-guard.enable = true;
+```
+
+It logs what it removes to `~/Library/Logs/free-space-guard.log`. Its
+notifications come from `osascript`, which macOS shows as Script Editor's, so
+allow those in System Settings > Notifications.
+`free-space-guard --dry-run --thin-below 2000` shows what a run would do,
+without deleting anything; its tests use fake `df`, `tmutil` and `mbx`.
 
 ## Forking
 
