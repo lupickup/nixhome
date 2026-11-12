@@ -186,10 +186,16 @@ server as well.
 `modules.home.dev.mbx` installs [mbx](https://github.com/jdx/mr-boxington)
 (mr-boxington): Rust checkouts share compiled outputs through one store, and
 each checkout's `target/` becomes a link into it, pruned under a disk budget.
-Builds go through it explicitly (`mbx build`, `mbx test`, `mbx clippy`); plain
-`cargo` is unchanged, because the module never runs `mbx setup` or puts the
-package's Cargo shim on `PATH`. nixhome takes no flake inputs, so the host
-passes `package` from mbx's flake; the module's header shows how.
+Build through it explicitly (`mbx build`, `mbx test`, `mbx clippy`), or set
+`shim.enable` to put the package's Cargo shim ahead of cargo on `PATH` in login
+shells, so plain `cargo` from shells, scripts, editors and agents builds through
+mbx too and counts toward its budget. Commands that build nothing go straight
+to cargo, and `MBX_DISABLE=1` sends everything there. Programs that set their
+own `PATH`, such as launchd agents, can prepend the read-only `shim.directory`.
+The module never runs `mbx setup`, so `mbx doctor` still reports the shim as
+not installed; `command -v cargo` shows which one runs. Nix builds use their
+own cargo. nixhome takes no flake inputs, so the host passes `package` from
+mbx's flake; the module's header shows how.
 
 ## Forking
 
