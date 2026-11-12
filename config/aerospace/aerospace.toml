@@ -5,6 +5,19 @@ config-version = 2
 # Available commands : https://nikitabobko.github.io/AeroSpace/commands
 after-startup-command = []
 
+# Browser picture-in-picture windows follow the focused workspace, since AeroSpace has no
+# sticky windows (https://github.com/nikitabobko/AeroSpace/issues/2). Moving a window
+# doesn't change focus, so this doesn't retrigger itself.
+exec-on-workspace-change = ['/bin/bash', '-c', '''
+export PATH="/run/current-system/sw/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+aerospace list-windows --all --format '%{window-id}|%{window-title}' |
+  while IFS='|' read -r id title; do
+    [ "$title" = "Picture in Picture" ] &&
+      aerospace move-node-to-workspace --window-id "$id" "$AEROSPACE_FOCUSED_WORKSPACE"
+  done
+true
+''']
+
 # Start AeroSpace at login
 start-at-login = true
 
@@ -259,3 +272,8 @@ focus-follows-mouse.enabled = false
     down = 'volume down'
     up = 'volume up'
     shift-down = ['volume set 0', 'mode main']
+
+# Picture-in-picture windows float over tiled windows (see exec-on-workspace-change above).
+[[on-window-detected]]
+    if.window-title-regex-substring = '^Picture in Picture$'
+    run = 'layout floating'
